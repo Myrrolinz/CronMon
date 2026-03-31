@@ -1,0 +1,24 @@
+# Binaries
+cronmon
+dist/
+
+# Test output
+coverage.out
+
+# Environment / secrets
+.env
+*.env.local
+
+# OS artefacts
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go workspace
+go.work
+go.work.sum
