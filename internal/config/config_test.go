@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -188,11 +189,54 @@ func TestString_EmptyPasswordsNotRedacted(t *testing.T) {
 	}
 }
 
+func TestLoad_MalformedDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("THIS IS NOT VALID\x00\xFF"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	_, err = config.Load()
+	if err == nil {
+		t.Fatal("Load() expected error for malformed .env, got nil")
+	}
+	if !strings.Contains(err.Error(), ".env") {
+		t.Errorf("error %q should mention .env", err.Error())
+	}
+}
+
+// loadConfig changes into a temporary directory (without any .env file) before
+// calling config.Load, so that developer-local .env files in the working
+// directory cannot affect test results.
+func loadConfig(t *testing.T) config.Config {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return cfg
+}
+
 func TestLoad_InvalidSchedulerInterval(t *testing.T) {
 	t.Setenv("SCHEDULER_INTERVAL", "not-a-number")
 	t.Setenv("BASE_URL", "https://example.com")
 	t.Setenv("ADMIN_PASS", "secret")
-	cfg := config.Load()
+	cfg := loadConfig(t)
 	if cfg.SchedulerInterval != -1 {
 		t.Errorf("SchedulerInterval = %d, want -1 for non-numeric input", cfg.SchedulerInterval)
 	}
@@ -222,7 +266,7 @@ func TestLoad_ReadsEnvVars(t *testing.T) {
 	t.Setenv("REQUIRE_HTTPS", "true")
 	t.Setenv("LOG_LEVEL", "debug")
 
-	cfg := config.Load()
+	cfg := loadConfig(t)
 
 	checks := []struct {
 		field string
@@ -283,7 +327,7 @@ func TestLoad_Defaults(t *testing.T) {
 		unsetenv(t, key)
 	}
 
-	cfg := config.Load()
+	cfg := loadConfig(t)
 
 	defaults := []struct {
 		field string

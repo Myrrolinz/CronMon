@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -30,13 +31,21 @@ type Config struct {
 }
 
 // Load reads configuration from environment variables.
-// It silently skips a .env file if it is absent.
-func Load() Config {
-	_ = godotenv.Load() // silently skip if absent
+// It silently skips a missing .env file, but returns an error if the file
+// exists and cannot be parsed.
+func Load() (Config, error) {
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Config{}, fmt.Errorf("config: failed to parse .env: %w", err)
+	}
 
 	interval, err := strconv.Atoi(getenv("SCHEDULER_INTERVAL", "30"))
 	if err != nil {
 		interval = -1
+	}
+
+	smtpTLS, err := strconv.ParseBool(getenv("SMTP_TLS", "true"))
+	if err != nil {
+		smtpTLS = true
 	}
 
 	return Config{
@@ -51,11 +60,11 @@ func Load() Config {
 		SMTPUser:          os.Getenv("SMTP_USER"),
 		SMTPPass:          os.Getenv("SMTP_PASS"),
 		SMTPFrom:          os.Getenv("SMTP_FROM"),
-		SMTPTLS:           getenv("SMTP_TLS", "true") != "false",
+		SMTPTLS:           smtpTLS,
 		TrustedProxy:      os.Getenv("TRUSTED_PROXY") == "true",
 		RequireHTTPS:      os.Getenv("REQUIRE_HTTPS") == "true",
 		LogLevel:          getenv("LOG_LEVEL", "info"),
-	}
+	}, nil
 }
 
 // Validate enforces startup rules. Returns the first validation error encountered.
@@ -79,7 +88,10 @@ func (c Config) Validate() error {
 		return fmt.Errorf("SCHEDULER_INTERVAL must be >= 10, got %d", c.SchedulerInterval)
 	}
 
-	// If any SMTP_* variable is set, both SMTP_HOST and SMTP_FROM must be present.
+	// If any meaningful SMTP_* credential or address is set, both SMTP_HOST and
+	// SMTP_FROM must be present. SMTP_PORT and SMTP_TLS are intentionally excluded
+	// because they always carry default values in the struct; their presence never
+	// indicates user intent to configure SMTP.
 	smtpAnySet := c.SMTPHost != "" || c.SMTPUser != "" || c.SMTPPass != "" || c.SMTPFrom != ""
 	if smtpAnySet {
 		if c.SMTPHost == "" {
