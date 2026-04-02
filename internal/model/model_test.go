@@ -69,6 +69,9 @@ func TestCheckZeroValue(t *testing.T) {
 	if c.ID != "" {
 		t.Errorf("zero Check.ID = %q, want empty string", c.ID)
 	}
+	if c.Slug != nil {
+		t.Errorf("zero Check.Slug = %v, want nil", c.Slug)
+	}
 	if c.Grace != 0 {
 		t.Errorf("zero Check.Grace = %d, want 0", c.Grace)
 	}
@@ -101,8 +104,8 @@ func TestChannelZeroValue(t *testing.T) {
 	if ch.ID != 0 {
 		t.Errorf("zero Channel.ID = %d, want 0", ch.ID)
 	}
-	if ch.Config != "" {
-		t.Errorf("zero Channel.Config = %q, want empty string", ch.Config)
+	if ch.Config != nil {
+		t.Errorf("zero Channel.Config = %s, want nil", ch.Config)
 	}
 }
 
@@ -129,7 +132,7 @@ func TestCheckJSONRoundTrip(t *testing.T) {
 	original := model.Check{
 		ID:             "a3f9c2d1-0000-0000-0000-000000000001",
 		Name:           "Database backup",
-		Slug:           "",
+		Slug:           nil,
 		Schedule:       "0 2 * * *",
 		Grace:          10,
 		Status:         model.StatusUp,
@@ -256,7 +259,7 @@ func TestChannelJSONRoundTrip(t *testing.T) {
 		ID:        7,
 		Type:      "email",
 		Name:      "ops alerts",
-		Config:    `{"address":"ops@example.com"}`,
+		Config:    json.RawMessage(`{"address":"ops@example.com"}`),
 		CreatedAt: now,
 	}
 
@@ -279,8 +282,8 @@ func TestChannelJSONRoundTrip(t *testing.T) {
 	if got.Name != original.Name {
 		t.Errorf("Channel.Name: got %q, want %q", got.Name, original.Name)
 	}
-	if got.Config != original.Config {
-		t.Errorf("Channel.Config: got %q, want %q", got.Config, original.Config)
+	if string(got.Config) != string(original.Config) {
+		t.Errorf("Channel.Config: got %s, want %s", got.Config, original.Config)
 	}
 	if !got.CreatedAt.Equal(original.CreatedAt) {
 		t.Errorf("Channel.CreatedAt: got %v, want %v", got.CreatedAt, original.CreatedAt)
@@ -341,11 +344,15 @@ func TestNotificationJSONRoundTrip(t *testing.T) {
 	if got.Type != original.Type {
 		t.Errorf("Notification.Type: got %q, want %q", got.Type, original.Type)
 	}
-	if got.ChannelID == nil || *got.ChannelID != channelID {
-		t.Errorf("Notification.ChannelID: got %v, want %d", got.ChannelID, channelID)
+	if got.ChannelID == nil {
+		t.Errorf("Notification.ChannelID: got nil, want %d", channelID)
+	} else if *got.ChannelID != channelID {
+		t.Errorf("Notification.ChannelID: got %d, want %d", *got.ChannelID, channelID)
 	}
-	if got.Error == nil || *got.Error != errMsg {
-		t.Errorf("Notification.Error: got %v, want %q", got.Error, errMsg)
+	if got.Error == nil {
+		t.Errorf("Notification.Error: got nil, want %q", errMsg)
+	} else if *got.Error != errMsg {
+		t.Errorf("Notification.Error: got %q, want %q", *got.Error, errMsg)
 	}
 	if !got.SentAt.Equal(original.SentAt) {
 		t.Errorf("Notification.SentAt: got %v, want %v", got.SentAt, original.SentAt)
@@ -399,7 +406,7 @@ func TestAlertEventJSONRoundTrip(t *testing.T) {
 			ID:        7,
 			Type:      "email",
 			Name:      "ops",
-			Config:    `{"address":"ops@example.com"}`,
+			Config:    json.RawMessage(`{"address":"ops@example.com"}`),
 			CreatedAt: now,
 		},
 		AlertType: model.AlertDown,

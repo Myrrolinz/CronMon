@@ -3,7 +3,10 @@
 // in the scheduler, repository, and handler packages.
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ---------------------------------------------------------------------------
 // Named string types
@@ -45,9 +48,9 @@ const (
 type Check struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
-	Slug           string     `json:"slug"`             // reserved for future human-readable URLs; empty in v1
-	Schedule       string     `json:"schedule"`         // 5-field cron expression
-	Grace          int        `json:"grace"`            // grace period in minutes; minimum 1
+	Slug           *string    `json:"slug,omitempty"` // reserved for future human-readable URLs; nil until set
+	Schedule       string     `json:"schedule"`       // 5-field cron expression
+	Grace          int        `json:"grace"`          // grace period in minutes; minimum 1
 	Status         Status     `json:"status"`
 	LastPingAt     *time.Time `json:"last_ping_at"`     // nil until first ping
 	NextExpectedAt *time.Time `json:"next_expected_at"` // nil until first ping or creation
@@ -68,11 +71,11 @@ type Ping struct {
 // Channel represents a notification channel (email, Slack webhook, or generic webhook).
 // Config is a JSON blob; its required keys vary by Type and are validated at write time.
 type Channel struct {
-	ID        int64     `json:"id"`
-	Type      string    `json:"type"`   // "email" | "slack" | "webhook"
-	Name      string    `json:"name"`
-	Config    string    `json:"config"` // JSON blob validated by handler layer
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64           `json:"id"`
+	Type      string          `json:"type"` // "email" | "slack" | "webhook"
+	Name      string          `json:"name"`
+	Config    json.RawMessage `json:"config"` // JSON blob validated by handler layer
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // CheckChannel represents the many-to-many join between a Check and a Channel.
