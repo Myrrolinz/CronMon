@@ -39,7 +39,7 @@ func TestExecStatements_InvalidSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	tx, err := database.Begin()
 	if err != nil {
@@ -58,7 +58,7 @@ func TestExecStatements_LongInvalidSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	tx, err := database.Begin()
 	if err != nil {
@@ -79,7 +79,7 @@ func TestExecStatements_CommentOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	tx, err := database.Begin()
 	if err != nil {
@@ -99,7 +99,7 @@ func TestExecStatements_EmptyStatements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	tx, err := database.Begin()
 	if err != nil {
