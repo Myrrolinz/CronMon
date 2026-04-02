@@ -5,8 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/myrrolinz/cronmon/internal/db"
 	_ "modernc.org/sqlite"
+
+	"github.com/myrrolinz/cronmon/internal/db"
 )
 
 // openTestDB is a helper that opens an in-memory SQLite database for testing.
@@ -16,7 +17,7 @@ func openTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { database.Close() }) //nolint:errcheck
 	return database
 }
 
@@ -80,7 +81,7 @@ func TestOpen_WALModeSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	var mode string
 	if err := database.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
@@ -269,7 +270,7 @@ func TestOpen_MigrateError(t *testing.T) {
 	if _, err := rawDB.Exec(`CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatalf("create wrong schema_migrations: %v", err)
 	}
-	rawDB.Close()
+	rawDB.Close() //nolint:errcheck
 
 	// db.Open should fail because Migrate cannot query the missing 'version' column.
 	_, err = db.Open(dbPath)
