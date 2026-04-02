@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/myrrolinz/cronmon/internal/model"
 	"github.com/myrrolinz/cronmon/internal/repository"
@@ -77,8 +78,8 @@ func TestChannelRepository_ListAll(t *testing.T) {
 
 	ch1 := makeChannel(t, "email", "Email channel")
 	ch2 := makeChannel(t, "webhook", "Webhook channel")
-	// ch2 is created 1s after ch1 to guarantee order.
-	ch2.CreatedAt = ch1.CreatedAt.Add(1)
+	// ch2 is created 1s after ch1 to guarantee different created_at after truncation to second precision.
+	ch2.CreatedAt = ch1.CreatedAt.Add(time.Second)
 
 	if err := repos.channelRepo.Create(ctx, &ch1); err != nil {
 		t.Fatalf("Create ch1: %v", err)

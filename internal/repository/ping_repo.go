@@ -66,7 +66,7 @@ func (r *sqlitePingRepo) ListByCheckID(ctx context.Context, checkID string, limi
 SELECT id, check_id, type, created_at, source_ip
 FROM pings
 WHERE check_id = ?
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT ?`
 
 	rows, err := r.db.QueryContext(ctx, q, checkID, limit)
@@ -99,7 +99,7 @@ WHERE check_id = ?
   AND id NOT IN (
       SELECT id FROM pings
       WHERE check_id = ?
-      ORDER BY created_at DESC
+	      ORDER BY created_at DESC, id DESC
       LIMIT ?
   )`
 

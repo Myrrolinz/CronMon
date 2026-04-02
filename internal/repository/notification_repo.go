@@ -83,7 +83,7 @@ func (r *sqliteNotificationRepo) ListByCheckID(ctx context.Context, checkID stri
 SELECT id, check_id, channel_id, type, sent_at, error
 FROM notifications
 WHERE check_id = ?
-ORDER BY sent_at DESC
+ORDER BY sent_at DESC, id DESC
 LIMIT ?`
 
 	rows, err := r.db.QueryContext(ctx, q, checkID, limit)

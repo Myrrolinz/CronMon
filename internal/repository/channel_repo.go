@@ -123,7 +123,7 @@ SELECT c.id, c.type, c.name, c.config, c.created_at
 FROM channels c
 JOIN check_channels cc ON c.id = cc.channel_id
 WHERE cc.check_id = ?
-ORDER BY c.created_at ASC`
+ORDER BY c.created_at ASC, c.id ASC`
 
 	rows, err := r.db.QueryContext(ctx, q, checkID)
 	if err != nil {
