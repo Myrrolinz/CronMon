@@ -22,3 +22,9 @@ Thumbs.db
 # Go workspace
 go.work
 go.work.sum
+
+# GitHub directories and files
+.github/agents
+.github/instructions
+.github/skills
+.github/README.md
