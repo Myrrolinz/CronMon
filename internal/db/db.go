@@ -119,21 +119,21 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	return nil
 }
 
-// execStatements executes each semicolon-separated SQL statement from content
-// within the given transaction. Blank chunks and pure-comment chunks are skipped.
+// execStatements executes the given SQL migration content within the given
+// transaction. The full content is passed to Exec as a single call so that
+// statements containing internal semicolons (e.g., CREATE TRIGGER … BEGIN
+// …; END;) are handled correctly. Blank or pure-comment content is skipped.
 func execStatements(tx *sql.Tx, content string) error {
-	for _, stmt := range strings.Split(content, ";") {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" || isCommentOnly(stmt) {
-			continue
+	content = strings.TrimSpace(content)
+	if content == "" || isCommentOnly(content) {
+		return nil
+	}
+	if _, err := tx.Exec(content); err != nil {
+		preview := content
+		if len(preview) > 60 {
+			preview = preview[:60] + "..."
 		}
-		if _, err := tx.Exec(stmt); err != nil {
-			preview := stmt
-			if len(preview) > 60 {
-				preview = preview[:60] + "..."
-			}
-			return fmt.Errorf("exec %q: %w", preview, err)
-		}
+		return fmt.Errorf("exec %q: %w", preview, err)
 	}
 	return nil
 }

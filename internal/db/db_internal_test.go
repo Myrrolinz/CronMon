@@ -87,8 +87,8 @@ func TestExecStatements_CommentOnly(t *testing.T) {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	// A semicolon-separated string of only comments must be a no-op.
-	err = execStatements(tx, "-- comment one ; -- comment two")
+	// A content string of only comments must be a no-op (isCommentOnly fast-path).
+	err = execStatements(tx, "-- comment one\n-- comment two")
 	if err != nil {
 		t.Errorf("execStatements with comment-only SQL: %v", err)
 	}

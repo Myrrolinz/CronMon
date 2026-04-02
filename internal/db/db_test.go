@@ -176,7 +176,10 @@ func TestOpen_NotificationsPreservedWhenChannelDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert channel: %v", err)
 	}
-	channelID, _ := res.LastInsertId()
+	channelID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
 
 	// Insert a notification referencing both.
 	_, err = database.Exec(
@@ -245,9 +248,9 @@ func TestOpen_PingsCascadeDeletedWithCheck(t *testing.T) {
 }
 
 func TestOpen_OpenError(t *testing.T) {
-	// A path in a non-existent directory must fail for a file-backed DB.
-	// (SQLite will create the file, but not the directory.)
-	_, err := db.Open("/nonexistent/dir/cronmon.db")
+	// A path inside a non-existent sub-directory must fail for a file-backed DB.
+	missingDir := filepath.Join(t.TempDir(), "missing", "cronmon.db")
+	_, err := db.Open(missingDir)
 	if err == nil {
 		t.Error("expected error opening DB in non-existent directory, got nil")
 	}
