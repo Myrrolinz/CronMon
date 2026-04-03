@@ -32,6 +32,7 @@ func TestValidate(t *testing.T) {
 
 		// invalid expressions
 		{name: "empty string", expr: "", wantErr: true},
+		{name: "whitespace only", expr: "   ", wantErr: true},
 		{name: "6-field (with seconds)", expr: "0 * * * * *", wantErr: true},
 		{name: "4-field", expr: "* * * *", wantErr: true},
 		{name: "bad minute value", expr: "60 * * * *", wantErr: true},
