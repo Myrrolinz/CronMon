@@ -204,9 +204,36 @@ func buildBodies(event model.AlertEvent, baseURL string) (plain, html string, er
 	return plainBuf.String(), htmlBuf.String(), nil
 }
 
+// sanitizeHeader returns an error if value contains CR or LF, which would
+// allow header injection into the RFC 5322 message.
+func sanitizeHeader(name, value string) error {
+	if strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("emailNotifier: header %q contains illegal CR or LF", name)
+	}
+	return nil
+}
+
+// isLoopback reports whether host is a loopback address ("localhost",
+// 127.x.x.x, or ::1).
+func isLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // buildMIMEMessage constructs a multipart/alternative MIME email message.
 // The returned byte slice is ready to be written to a smtp.Client.Data writer.
 func buildMIMEMessage(from, to, subject, plainBody, htmlBody string) ([]byte, error) {
+	// Reject header injection: CR or LF in From/To would split RFC 5322 headers.
+	if err := sanitizeHeader("From", from); err != nil {
+		return nil, err
+	}
+	if err := sanitizeHeader("To", to); err != nil {
+		return nil, err
+	}
+
 	// Use a time-based boundary; uniqueness within a process is sufficient.
 	boundary := fmt.Sprintf("cronmon%d", time.Now().UnixNano())
 
@@ -262,16 +289,25 @@ func (n *EmailNotifier) sendSMTP(ctx context.Context, to string, msg []byte) err
 		return fmt.Errorf("emailNotifier: dial %s: %w", addr, err)
 	}
 
+	// Wire ctx deadline to the raw connection so all subsequent SMTP I/O
+	// (EHLO, STARTTLS, AUTH, DATA …) is bounded by the caller's context.
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			_ = conn.Close()
+			return fmt.Errorf("emailNotifier: set deadline: %w", err)
+		}
+	}
+
 	client, err := smtp.NewClient(conn, n.cfg.Host)
 	if err != nil {
-		conn.Close() //nolint:errcheck
+		_ = conn.Close()
 		return fmt.Errorf("emailNotifier: smtp.NewClient: %w", err)
 	}
-	defer client.Quit() //nolint:errcheck
+	defer client.Close() //nolint:errcheck
 
 	// ── Optional STARTTLS ─────────────────────────────────────────────────
 	if n.cfg.TLS {
-		tlsCfg := &tls.Config{ServerName: n.cfg.Host}
+		tlsCfg := &tls.Config{ServerName: n.cfg.Host, MinVersion: tls.VersionTLS12}
 		if err := client.StartTLS(tlsCfg); err != nil {
 			return fmt.Errorf("emailNotifier: StartTLS: %w", err)
 		}
@@ -279,6 +315,11 @@ func (n *EmailNotifier) sendSMTP(ctx context.Context, to string, msg []byte) err
 
 	// ── Optional AUTH ─────────────────────────────────────────────────────
 	if n.cfg.User != "" {
+		// Refuse to transmit credentials over a plaintext connection to any
+		// non-loopback host to prevent accidental exposure in production.
+		if !n.cfg.TLS && !isLoopback(n.cfg.Host) {
+			return fmt.Errorf("emailNotifier: refusing to send credentials over unencrypted connection to %q; set SMTP_TLS=true", n.cfg.Host)
+		}
 		auth := smtp.PlainAuth("", n.cfg.User, n.cfg.Pass, n.cfg.Host)
 		if err := client.Auth(auth); err != nil {
 			return fmt.Errorf("emailNotifier: Auth: %w", err)

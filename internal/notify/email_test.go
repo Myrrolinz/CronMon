@@ -54,7 +54,7 @@ func newMockSMTPServer(t *testing.T) *mockSMTPServer {
 		msgs:     make(chan capturedEmail, 16),
 	}
 
-	t.Cleanup(func() { s.listener.Close() })
+	t.Cleanup(func() { _ = s.listener.Close() })
 
 	go s.run()
 	return s
@@ -85,12 +85,12 @@ func (s *mockSMTPServer) run() {
 // handleConn speaks enough SMTP to receive one message per connection.
 // It responds 502 to STARTTLS so that TLS=true tests can verify the attempt.
 func (s *mockSMTPServer) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck
 
 	r := bufio.NewReader(conn)
 
 	writeln := func(format string, args ...any) {
-		fmt.Fprintf(conn, format+"\r\n", args...)
+		_, _ = fmt.Fprintf(conn, format+"\r\n", args...)
 	}
 
 	// Greeting.
@@ -431,20 +431,27 @@ func TestEmailNotifier_MissingAddress(t *testing.T) {
 }
 
 // TestEmailNotifier_DialFailure verifies that Send propagates a dial error.
+// Uses WithDialer to inject a deterministic failure rather than relying on a
+// specific port being closed (which is environment-dependent).
 func TestEmailNotifier_DialFailure(t *testing.T) {
 	t.Parallel()
 
-	// Point at a port nothing is listening on.
+	wantErr := fmt.Errorf("injected dial failure")
 	n := notify.NewEmailNotifier(notify.EmailConfig{
 		Host:    "127.0.0.1",
-		Port:    "1", // port 1 is privileged and almost certainly not open
+		Port:    "25",
 		From:    "from@example.com",
 		BaseURL: "https://cronmon.example.com",
+	}).WithDialer(func(_ context.Context, _, _ string) (net.Conn, error) {
+		return nil, wantErr
 	})
 
 	err := n.Send(context.Background(), makeEvent(model.AlertDown))
 	if err == nil {
 		t.Fatal("expected dial error, got nil")
+	}
+	if !strings.Contains(err.Error(), wantErr.Error()) {
+		t.Fatalf("expected error to contain %q; got: %v", wantErr.Error(), err)
 	}
 }
 
@@ -479,5 +486,89 @@ func TestEmailNotifier_WithAuth(t *testing.T) {
 	}
 	if !authSeen {
 		t.Error("AUTH command should be sent when User is set")
+	}
+}
+
+// TestEmailNotifier_AuthWithoutTLS_NonLoopback verifies that PlainAuth is
+// refused when TLS is disabled and the configured host is not loopback,
+// to prevent accidental credential exposure in production.
+func TestEmailNotifier_AuthWithoutTLS_NonLoopback(t *testing.T) {
+	srv := newMockSMTPServer(t)
+
+	n := notify.NewEmailNotifier(notify.EmailConfig{
+		Host:    "smtp.example.com", // non-loopback hostname
+		Port:    "587",
+		From:    "cronmon@example.com",
+		User:    "smtpuser",
+		Pass:    "smtppass",
+		TLS:     false,
+		BaseURL: "https://cronmon.example.com",
+	}).WithDialer(func(ctx context.Context, network, _ string) (net.Conn, error) {
+		// Redirect to the local mock server so EHLO succeeds.
+		return (&net.Dialer{}).DialContext(ctx, network, srv.addr)
+	})
+
+	err := n.Send(context.Background(), makeEvent(model.AlertDown))
+	if err == nil {
+		t.Fatal("expected error for PlainAuth over unencrypted non-loopback, got nil")
+	}
+	if !strings.Contains(err.Error(), "unencrypted") {
+		t.Errorf("error should mention \"unencrypted\"; got: %v", err)
+	}
+}
+
+// TestEmailNotifier_HeaderInjection verifies that CR or LF in the From address
+// or recipient address is rejected before any bytes are sent to the server.
+func TestEmailNotifier_HeaderInjection(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		from    string
+		cfgJSON []byte
+		wantErr string
+	}{
+		{
+			name: "CR in From",
+			from: "cronmon@example.com\rX-Injected: bad",
+			cfgJSON: func() []byte {
+				b, _ := json.Marshal(map[string]string{"address": "alert@example.com"})
+				return b
+			}(),
+			wantErr: `"From"`,
+		},
+		{
+			name: "LF in recipient",
+			from: "cronmon@example.com",
+			cfgJSON: func() []byte {
+				b, _ := json.Marshal(map[string]string{"address": "alert@example.com\nX-Injected: bad"})
+				return b
+			}(),
+			wantErr: `"To"`,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// No server needed: sanitization fires before any network I/O.
+			n := notify.NewEmailNotifier(notify.EmailConfig{
+				Host:    "localhost",
+				Port:    "25",
+				From:    tc.from,
+				BaseURL: "https://cronmon.example.com",
+			})
+			ev := makeEvent(model.AlertDown)
+			ev.Channel.Config = tc.cfgJSON
+
+			err := n.Send(context.Background(), ev)
+			if err == nil {
+				t.Fatal("expected header injection error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error should contain %s; got: %v", tc.wantErr, err)
+			}
+		})
 	}
 }
