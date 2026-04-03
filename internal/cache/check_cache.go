@@ -24,6 +24,26 @@ type StateCache struct {
 	repo   repository.CheckRepository
 }
 
+// cloneCheck returns a deep copy of c, allocating new values for all pointer
+// fields (Slug, LastPingAt, NextExpectedAt) so that neither the caller nor the
+// internal cache can mutate the other's data through shared pointers.
+func cloneCheck(c *model.Check) *model.Check {
+	cp := *c
+	if c.Slug != nil {
+		s := *c.Slug
+		cp.Slug = &s
+	}
+	if c.LastPingAt != nil {
+		t := *c.LastPingAt
+		cp.LastPingAt = &t
+	}
+	if c.NextExpectedAt != nil {
+		t := *c.NextExpectedAt
+		cp.NextExpectedAt = &t
+	}
+	return &cp
+}
+
 // New creates a StateCache backed by the given CheckRepository.
 // Call Hydrate before first use.
 func New(repo repository.CheckRepository) *StateCache {
@@ -39,7 +59,7 @@ func New(repo repository.CheckRepository) *StateCache {
 func (sc *StateCache) Hydrate(ctx context.Context) error {
 	checks, err := sc.repo.ListAll(ctx)
 	if err != nil {
-		return fmt.Errorf("StateCache.Hydrate: %w", err)
+		return fmt.Errorf("stateCache.Hydrate: %w", err)
 	}
 
 	sc.mu.Lock()
@@ -47,8 +67,7 @@ func (sc *StateCache) Hydrate(ctx context.Context) error {
 
 	sc.checks = make(map[string]*model.Check, len(checks))
 	for _, c := range checks {
-		cp := *c
-		sc.checks[c.ID] = &cp
+		sc.checks[c.ID] = cloneCheck(c)
 	}
 	return nil
 }
@@ -63,38 +82,49 @@ func (sc *StateCache) Get(uuid string) *model.Check {
 	if !ok {
 		return nil
 	}
-	cp := *c
-	return &cp
+	return cloneCheck(c)
+}
+
+// setLocked persists c to the database and updates the cache map.
+// The caller MUST hold sc.mu.Lock(). Errors are returned unwrapped so the
+// caller can annotate with the appropriate context.
+func (sc *StateCache) setLocked(ctx context.Context, c *model.Check) error {
+	if err := sc.repo.Update(ctx, c); err != nil {
+		return err
+	}
+	sc.checks[c.ID] = cloneCheck(c)
+	return nil
 }
 
 // Set persists the check to the database and then updates the in-memory cache.
+// The mutex is held across both the DB write and the map update so that readers
+// never observe a state where the DB has been updated but the cache has not.
 // If the database write fails the cache is not modified and the error is
 // returned to the caller.
 func (sc *StateCache) Set(ctx context.Context, c *model.Check) error {
-	cp := *c
-
-	if err := sc.repo.Update(ctx, &cp); err != nil {
-		return fmt.Errorf("StateCache.Set: %w", err)
-	}
+	cp := cloneCheck(c)
 
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	stored := cp
-	sc.checks[cp.ID] = &stored
+	if err := sc.setLocked(ctx, cp); err != nil {
+		return fmt.Errorf("stateCache.Set: %w", err)
+	}
 	return nil
 }
 
 // Delete removes the check from both the database and the in-memory cache.
-// If the database delete fails the cache is not modified and the error is
-// returned to the caller.
+// The mutex is held across both the DB delete and the map removal so that
+// readers never observe a state where the record is gone from the DB but still
+// visible in the cache. If the database delete fails the cache is not modified
+// and the error is returned to the caller.
 func (sc *StateCache) Delete(ctx context.Context, uuid string) error {
-	if err := sc.repo.Delete(ctx, uuid); err != nil {
-		return fmt.Errorf("StateCache.Delete: %w", err)
-	}
-
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+
+	if err := sc.repo.Delete(ctx, uuid); err != nil {
+		return fmt.Errorf("stateCache.Delete: %w", err)
+	}
 
 	delete(sc.checks, uuid)
 	return nil
@@ -109,8 +139,7 @@ func (sc *StateCache) Snapshot() []*model.Check {
 
 	result := make([]*model.Check, 0, len(sc.checks))
 	for _, c := range sc.checks {
-		cp := *c
-		result = append(result, &cp)
+		result = append(result, cloneCheck(c))
 	}
 	return result
 }
@@ -118,30 +147,32 @@ func (sc *StateCache) Snapshot() []*model.Check {
 // WithWriteLock holds the exclusive write lock for the entire duration of fn.
 //
 // fn receives:
-//   - checks: value-copies of all checks for read-only inspection.
+//   - checks: deep copies of all checks for read-only inspection.
 //   - update: a closure that writes an updated check to both the database and
 //     the cache while the same lock is held. If the database write fails,
 //     update returns an error and the cache entry is left unchanged.
 //
 // This method is intended exclusively for the scheduler's evaluateAll() pass
 // to eliminate TOCTOU races during state transitions.
+//
+// WARNING: fn must not call any StateCache method (Get, Set, Delete, Snapshot,
+// WithWriteLock). The write lock is already held; re-entrant calls will
+// deadlock.
 func (sc *StateCache) WithWriteLock(ctx context.Context, fn func(checks []*model.Check, update func(*model.Check) error)) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	// Build read-only copies for the callback.
+	// Build deep copies for the callback so it cannot mutate internal state
+	// without going through the update closure.
 	copies := make([]*model.Check, 0, len(sc.checks))
 	for _, c := range sc.checks {
-		cp := *c
-		copies = append(copies, &cp)
+		copies = append(copies, cloneCheck(c))
 	}
 
 	update := func(c *model.Check) error {
-		if err := sc.repo.Update(ctx, c); err != nil {
-			return fmt.Errorf("StateCache.WithWriteLock update: %w", err)
+		if err := sc.setLocked(ctx, c); err != nil {
+			return fmt.Errorf("stateCache.WithWriteLock update: %w", err)
 		}
-		stored := *c
-		sc.checks[c.ID] = &stored
 		return nil
 	}
 

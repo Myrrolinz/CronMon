@@ -199,6 +199,20 @@ func TestStateCache_Hydrate_ReplacesExistingCache(t *testing.T) {
 	}
 }
 
+// makeCheckWithPtrs returns a Check with all pointer fields populated, so that
+// shallow-copy regressions (shared *string / *time.Time) will be detected by
+// the copy-safety tests.
+func makeCheckWithPtrs(id, name string) model.Check {
+	c := makeCheck(id, name)
+	slug := "slug-" + id
+	c.Slug = &slug
+	now := time.Now().UTC().Truncate(time.Second)
+	later := now.Add(10 * time.Minute)
+	c.LastPingAt = &now
+	c.NextExpectedAt = &later
+	return c
+}
+
 // ---------------------------------------------------------------------------
 // Get
 // ---------------------------------------------------------------------------
@@ -212,7 +226,7 @@ func TestStateCache_Get_NotFound(t *testing.T) {
 
 func TestStateCache_Get_ReturnsCopy(t *testing.T) {
 	repo := newMockCheckRepo()
-	c := makeCheck("uuid-1", "Backup")
+	c := makeCheckWithPtrs("uuid-1", "Backup")
 	repo.seed(c)
 
 	sc := cache.New(repo)
@@ -224,13 +238,35 @@ func TestStateCache_Get_ReturnsCopy(t *testing.T) {
 	if got == nil {
 		t.Fatal("Get returned nil")
 	}
+	if got.Slug == nil || got.LastPingAt == nil || got.NextExpectedAt == nil {
+		t.Fatal("Get returned nil pointer field")
+	}
 
-	// Mutate the returned copy — the cache must not reflect the change.
+	originalSlug := *got.Slug
+	originalLastPingAt := *got.LastPingAt
+	originalNextExpectedAt := *got.NextExpectedAt
+
+	// Mutate all fields of the returned copy — the cache must not reflect any change.
 	got.Name = "mutated"
+	*got.Slug = "mutated-slug"
+	*got.LastPingAt = got.LastPingAt.Add(time.Hour)
+	*got.NextExpectedAt = got.NextExpectedAt.Add(time.Hour)
 
 	got2 := sc.Get("uuid-1")
+	if got2 == nil {
+		t.Fatal("second Get returned nil")
+	}
 	if got2.Name == "mutated" {
-		t.Error("mutating the returned value affected the internal cache state")
+		t.Error("mutating Name of the returned value affected the internal cache state")
+	}
+	if got2.Slug == nil || *got2.Slug != originalSlug {
+		t.Errorf("Slug = %v, want %q", got2.Slug, originalSlug)
+	}
+	if got2.LastPingAt == nil || !got2.LastPingAt.Equal(originalLastPingAt) {
+		t.Errorf("LastPingAt = %v, want %v", got2.LastPingAt, originalLastPingAt)
+	}
+	if got2.NextExpectedAt == nil || !got2.NextExpectedAt.Equal(originalNextExpectedAt) {
+		t.Errorf("NextExpectedAt = %v, want %v", got2.NextExpectedAt, originalNextExpectedAt)
 	}
 }
 
@@ -298,17 +334,23 @@ func TestStateCache_Set_ReturnsCopyAfterSet(t *testing.T) {
 		t.Fatalf("Hydrate: %v", err)
 	}
 
-	toSet := makeCheck("uuid-1", "Original")
+	toSet := makeCheckWithPtrs("uuid-1", "Original")
 	if err := sc.Set(context.Background(), &toSet); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
-	// Mutate the value we passed to Set — cache must not be affected.
+	originalSlug := *toSet.Slug
+
+	// Mutate the value we passed to Set (including pointer fields) — cache must not be affected.
 	toSet.Name = "mutated-after-set"
+	*toSet.Slug = "mutated-slug-after-set"
 
 	got := sc.Get("uuid-1")
 	if got.Name == "mutated-after-set" {
-		t.Error("mutating the value passed to Set affected the internal cache state")
+		t.Error("mutating Name of the value passed to Set affected the internal cache state")
+	}
+	if got.Slug == nil || *got.Slug != originalSlug {
+		t.Errorf("Slug = %v, want %q", got.Slug, originalSlug)
 	}
 }
 
@@ -387,7 +429,7 @@ func TestStateCache_Snapshot_ReturnsAllCopies(t *testing.T) {
 
 func TestStateCache_Snapshot_ReturnsCopies(t *testing.T) {
 	repo := newMockCheckRepo()
-	repo.seed(makeCheck("uuid-1", "Backup"))
+	repo.seed(makeCheckWithPtrs("uuid-1", "Backup"))
 
 	sc := cache.New(repo)
 	if err := sc.Hydrate(context.Background()); err != nil {
@@ -398,12 +440,27 @@ func TestStateCache_Snapshot_ReturnsCopies(t *testing.T) {
 	if len(snap) == 0 {
 		t.Fatal("Snapshot is empty")
 	}
-	// Mutate a snapshot element — the cache must not reflect it.
+	if snap[0].Slug == nil || snap[0].LastPingAt == nil || snap[0].NextExpectedAt == nil {
+		t.Fatal("Snapshot element has nil pointer field")
+	}
+
+	originalSlug := *snap[0].Slug
+	originalLastPingAt := *snap[0].LastPingAt
+
+	// Mutate the snapshot element (scalar and pointer) — the cache must not reflect it.
 	snap[0].Name = "mutated"
+	*snap[0].Slug = "mutated-slug"
+	*snap[0].LastPingAt = snap[0].LastPingAt.Add(time.Hour)
 
 	got := sc.Get("uuid-1")
 	if got.Name == "mutated" {
-		t.Error("mutating a Snapshot element affected the internal cache state")
+		t.Error("mutating Name of a Snapshot element affected the internal cache state")
+	}
+	if got.Slug == nil || *got.Slug != originalSlug {
+		t.Errorf("Slug = %v, want %q", got.Slug, originalSlug)
+	}
+	if got.LastPingAt == nil || !got.LastPingAt.Equal(originalLastPingAt) {
+		t.Errorf("LastPingAt = %v, want %v", got.LastPingAt, originalLastPingAt)
 	}
 }
 
