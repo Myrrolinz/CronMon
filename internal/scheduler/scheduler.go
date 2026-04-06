@@ -78,7 +78,10 @@ func (s *Scheduler) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	s.wg.Add(1)
-	go s.run(ctx)
+	go func() {
+		defer cancel() // ensures the context is always released when the goroutine exits
+		s.run(ctx)
+	}()
 }
 
 // Stop signals the background goroutine to exit and blocks until it has
