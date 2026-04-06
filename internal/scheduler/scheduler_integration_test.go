@@ -175,19 +175,14 @@ func TestSchedulerIntegration_StartReconciles(t *testing.T) {
 	sched.Start()
 	t.Cleanup(sched.Stop)
 
-	// The reconciliation pass runs synchronously before the first ticker, so
-	// by the time Start returns the goroutine has already processed it.
-	// Give it a short window to allow the goroutine to run.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(alertCh) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if len(alertCh) == 0 {
-		t.Fatal("no AlertEvent enqueued after Start() reconciliation pass")
+	// Start() spawns a goroutine; the reconciliation pass runs inside it
+	// before the first ticker fires.  Block on the alert channel with a
+	// timeout instead of a sleep loop so the test is deterministic and
+	// doesn't flake under slow scheduling.
+	select {
+	case <-alertCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reconciliation AlertEvent after Start()")
 	}
 
 	// SQLite must also reflect the transition.

@@ -41,9 +41,9 @@ func openDB(t *testing.T) *sql.DB {
 }
 
 // newCacheAndRepo opens a real SQLite DB, inserts c via the repo, then
-// returns a hydrated StateCache and the same repo (both backed by the same DB).
-// A second "read-back" repo is also returned so tests can verify writes by
-// querying the DB without going through the cache.
+// returns a hydrated StateCache and the repository backed by the same DB.
+// Tests can use the returned repository to verify persisted writes directly,
+// because repository reads go to SQLite rather than through the cache.
 func newCacheAndRepo(t *testing.T, checks ...*model.Check) (*cache.StateCache, repository.CheckRepository) {
 	t.Helper()
 	sqlDB := openDB(t)
