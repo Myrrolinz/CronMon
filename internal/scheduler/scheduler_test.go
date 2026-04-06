@@ -555,6 +555,43 @@ func TestStop_DoesNotDeadlock(t *testing.T) {
 	}
 }
 
+func TestStop_Idempotent(t *testing.T) {
+	sc, _ := makeCache(t)
+	s := New(sc, newMockChannelRepo(), &mockPingRepo{},
+		make(chan model.AlertEvent, 1), 24*time.Hour)
+	s.cleanupInterval = time.Hour
+	s.Start()
+	s.Stop()
+
+	// Second Stop must not panic.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("second Stop() panicked: %v", r)
+		}
+	}()
+	s.Stop()
+}
+
+func TestNew_PanicsOnZeroInterval(t *testing.T) {
+	sc, _ := makeCache(t)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("New() with zero interval should panic")
+		}
+	}()
+	New(sc, newMockChannelRepo(), &mockPingRepo{}, make(chan model.AlertEvent, 1), 0)
+}
+
+func TestNew_PanicsOnNegativeInterval(t *testing.T) {
+	sc, _ := makeCache(t)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("New() with negative interval should panic")
+		}
+	}()
+	New(sc, newMockChannelRepo(), &mockPingRepo{}, make(chan model.AlertEvent, 1), -time.Second)
+}
+
 // TestConcurrentPingsAndEvaluate verifies the scheduler's write lock does not
 // race with concurrent cache reads via the -race detector.
 func TestConcurrentPingsAndEvaluate(t *testing.T) {

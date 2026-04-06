@@ -202,26 +202,31 @@ type Notifier interface {
 
 ```go
 type Scheduler struct {
-    cache       *cache.StateCache
-    channelRepo repository.ChannelRepository
-    pingRepo    repository.PingRepository
-    alertCh     chan<- model.AlertEvent
-    interval    time.Duration
-    stopCh      chan struct{}
+    cache           *cache.StateCache
+    channelRepo     repository.ChannelRepository
+    pingRepo        repository.PingRepository
+    alertCh         chan<- model.AlertEvent
+    interval        time.Duration
+    cleanupInterval time.Duration
+    stopCh          chan struct{}
+    cancel          context.CancelFunc
+    wg              sync.WaitGroup
+    stopOnce        sync.Once
 }
 ```
 
 - `notifRepo` is intentionally absent: the scheduler only enqueues `AlertEvent`s; the `NotifierWorker` (Step 10) owns all writes to the `notifications` table
-- `Start()` — launches goroutine; runs `reconcile()` immediately on first tick before regular loop begins; then `time.Ticker` at configured interval
-- `Stop()` — sends to `stopCh`; blocks until goroutine exits via `sync.WaitGroup`
-- `evaluateAll(now time.Time)`:
-  - Calls `cache.WithWriteLock(...)` — the write lock is held for the entire pass via the callback
-  - Inside the callback: for each check, if `status == "up"` and `now > NextExpectedAt`: call the `update` closure to transition to `"down"` (persists to DB atomically), then enqueue `AlertEvent` per subscribed channel via `channelRepo.ListByCheckID`
-  - Scheduler skips `"paused"` and `"new"` checks
-  - Non-blocking send to `alertCh`: `select { case alertCh <- e: default: log.Warn("alert channel full, dropping") }`
+- `New()` — panics if `interval <= 0` (mirrors `time.NewTicker` contract; catches misconfiguration at startup rather than with a cryptic runtime panic)
+- `Start()` — creates a `context.WithCancel`; stores the cancel func; launches goroutine; runs `evaluateAll` immediately as a startup reconciliation pass; then `time.Ticker` at configured interval
+- `Stop()` — guarded by `sync.Once`: calls the context cancel func (interrupts any in-flight DB calls), then closes `stopCh`; blocks on `wg.Wait()` until the goroutine exits. Safe to call multiple times.
+- `evaluateAll(now time.Time)` — **two-phase** to minimise write-lock duration:
+  - **Phase 1 (under write lock):** calls `cache.WithWriteLock(...)`. For each check: skip if `status != "up"`, skip if `NextExpectedAt` is nil or not yet passed. Otherwise call the `update` closure to atomically persist `status = "down"` to both DB and cache; collect each transitioned check into a local slice.
+  - **Phase 2 (lock released):** for each transitioned check, call `channelRepo.ListByCheckID` and enqueue one `AlertEvent` per channel. Moving the DB query and channel send outside the lock prevents SMTP/DB latency from stalling concurrent ping handlers.
+  - Non-blocking send: `select { case alertCh <- e: default: slog.Warn("alert channel full, dropping") }`
+  - Scheduler skips `"paused"`, `"new"`, and already-`"down"` checks
 - `cleanupOldPings(ctx)` — runs on 1h ticker; calls `cache.Snapshot()` (RLock) to get check IDs, then calls `pingRepo.DeleteOldest(ctx, checkID, 1000)` for every check — runs entirely outside the write lock
 - Startup reconciliation: before first regular tick, run `evaluateAll` once to catch checks that went down while the process was offline
-- Tests: unit tests with mock cache and repos; test `up→down` transition; test paused checks are skipped; test non-blocking drop when channel full; test cleanup is called on 1h tick; race detector
+- Tests: unit tests with mock cache and repos; test `up→down` transition; test paused/new/already-down skipped; test non-blocking drop when channel full; test cleanup called on tick; test `Stop()` idempotent (no panic on double call); test `New()` panics on zero/negative interval; race detector
 - Dependencies: Steps 6, 7, 8
 - Risk: High (concurrency; correct lock strategy; startup reconciliation ordering)
 

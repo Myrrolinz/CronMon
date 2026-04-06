@@ -13,6 +13,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -38,11 +39,14 @@ type Scheduler struct {
 	interval        time.Duration
 	cleanupInterval time.Duration
 	stopCh          chan struct{}
+	cancel          context.CancelFunc // cancels the goroutine's context on Stop
 	wg              sync.WaitGroup
+	stopOnce        sync.Once
 }
 
 // New creates a Scheduler backed by the given cache and repositories.
 // interval is the period between evaluateAll passes; use 30 s in production.
+// Panics if interval is <= 0 (time.NewTicker would also panic).
 // Call Start to begin the background goroutine.
 func New(
 	sc *cache.StateCache,
@@ -51,6 +55,9 @@ func New(
 	alertCh chan<- model.AlertEvent,
 	interval time.Duration,
 ) *Scheduler {
+	if interval <= 0 {
+		panic(fmt.Sprintf("scheduler.New: interval must be > 0, got %v", interval))
+	}
 	return &Scheduler{
 		cache:           sc,
 		channelRepo:     channelRepo,
@@ -59,6 +66,7 @@ func New(
 		interval:        interval,
 		cleanupInterval: defaultCleanupInterval,
 		stopCh:          make(chan struct{}),
+		cancel:          func() {}, // replaced by a real cancel in Start
 	}
 }
 
@@ -67,22 +75,27 @@ func New(
 // regular tick, so any check that went down while the process was offline is
 // detected without delay.  Stop must be called to release the goroutine.
 func (s *Scheduler) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
 	s.wg.Add(1)
-	go s.run()
+	go s.run(ctx)
 }
 
 // Stop signals the background goroutine to exit and blocks until it has
-// finished cleanly.
+// finished cleanly.  Safe to call multiple times; subsequent calls are no-ops.
+// Cancels the goroutine's context so any in-flight repository calls return
+// promptly rather than waiting for their full timeout.
 func (s *Scheduler) Stop() {
-	close(s.stopCh)
+	s.stopOnce.Do(func() {
+		s.cancel()
+		close(s.stopCh)
+	})
 	s.wg.Wait()
 }
 
 // run is the scheduler's main goroutine body.
-func (s *Scheduler) run() {
+func (s *Scheduler) run(ctx context.Context) {
 	defer s.wg.Done()
-
-	ctx := context.Background()
 
 	// Startup reconciliation: catch checks that went down while the process
 	// was offline, before the first regular tick fires.
@@ -110,11 +123,18 @@ func (s *Scheduler) run() {
 // their deadline has passed.  One AlertEvent is enqueued per channel
 // subscribed to the affected check.
 //
-// The entire pass runs under the cache's exclusive write lock (via
-// WithWriteLock) to eliminate TOCTOU races with concurrent ping handlers.
-// The update closure passed by WithWriteLock persists each state change to
-// both the database and the cache atomically under that same lock.
+// The implementation is deliberately two-phase to keep the write lock as short
+// as possible:
+//
+//  1. Phase 1 (under write lock): iterate checks, persist up→down transitions
+//     via the update closure.  Collect a snapshot of each transitioned check.
+//
+//  2. Phase 2 (lock released): query channels and enqueue AlertEvents for each
+//     transitioned check.  Moving the repository call and channel send outside
+//     the lock prevents DB latency from blocking concurrent ping handlers.
 func (s *Scheduler) evaluateAll(ctx context.Context, now time.Time) {
+	var transitioned []model.Check
+
 	s.cache.WithWriteLock(ctx, func(checks []*model.Check, update func(*model.Check) error) {
 		for _, c := range checks {
 			// Only "up" checks can transition to "down".
@@ -133,7 +153,8 @@ func (s *Scheduler) evaluateAll(ctx context.Context, now time.Time) {
 				continue
 			}
 
-			// Deadline missed: persist the down transition atomically.
+			// Deadline missed: persist the down transition atomically while
+			// the write lock is still held.
 			c.Status = model.StatusDown
 			c.UpdatedAt = now
 			if err := update(c); err != nil {
@@ -142,32 +163,39 @@ func (s *Scheduler) evaluateAll(ctx context.Context, now time.Time) {
 				continue
 			}
 
-			// Enqueue one AlertEvent per channel subscribed to this check.
-			channels, err := s.channelRepo.ListByCheckID(ctx, c.ID)
-			if err != nil {
-				slog.Error("scheduler: failed to list channels for check",
-					"check_id", c.ID, "error", err)
-				continue
-			}
-
-			for _, ch := range channels {
-				event := model.AlertEvent{
-					Check:     *c,
-					Channel:   *ch,
-					AlertType: model.AlertDown,
-				}
-				// Non-blocking send: if the notifier worker is behind, drop
-				// the event and log a warning rather than stalling the
-				// scheduler's write lock.
-				select {
-				case s.alertCh <- event:
-				default:
-					slog.Warn("scheduler: alert channel full, dropping event",
-						"check_id", c.ID, "channel_id", ch.ID)
-				}
-			}
+			// Collect the snapshot for Phase 2 (outside the lock).
+			transitioned = append(transitioned, *c)
 		}
 	})
+
+	// Phase 2: write lock is now released.
+	// Query channels and enqueue AlertEvents without contending with ping
+	// handlers that need the same write lock.
+	for i := range transitioned {
+		check := transitioned[i]
+		channels, err := s.channelRepo.ListByCheckID(ctx, check.ID)
+		if err != nil {
+			slog.Error("scheduler: failed to list channels for check",
+				"check_id", check.ID, "error", err)
+			continue
+		}
+
+		for _, ch := range channels {
+			event := model.AlertEvent{
+				Check:     check,
+				Channel:   *ch,
+				AlertType: model.AlertDown,
+			}
+			// Non-blocking send: if the notifier worker is behind, drop the
+			// event and log a warning rather than blocking the scheduler.
+			select {
+			case s.alertCh <- event:
+			default:
+				slog.Warn("scheduler: alert channel full, dropping event",
+					"check_id", check.ID, "channel_id", ch.ID)
+			}
+		}
+	}
 }
 
 // cleanupOldPings prunes ping rows for every check, keeping only the most
