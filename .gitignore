@@ -3,7 +3,7 @@ cronmon
 dist/
 
 # Test output
-coverage.out
+*.out
 
 # Environment / secrets
 .env
