@@ -357,8 +357,9 @@ main goroutine
 │
 ├── scheduler goroutine             ← single, owned by Scheduler
 │   ├── time.Ticker (30s)
-│   │   └── evaluateAll()           ← Lock() for entire pass; no TOCTOU
-│   │       └── ch <- AlertEvent    ← non-blocking send
+│   │   └── evaluateAll()           ← two-phase; Lock() for transitions only
+│   │       ├── Phase 1 (Lock held): up→down transitions persisted atomically
+│   │       └── Phase 2 (Lock released): channel lookups + ch <- AlertEvent
 │   └── time.Ticker (1h)
 │       └── cleanupOldPings()       ← DELETE pings beyond 1,000-row limit per check
 │
@@ -380,7 +381,12 @@ type StateCache struct {
 - HTTP read handlers: `RLock()` → read → `RUnlock()`
 - Scheduler: `Lock()` → scan all checks and apply any transitions → `Unlock()`
 
-The scheduler holds the **write lock** for the entire `evaluateAll()` pass rather than acquiring a read lock, releasing it, and re-acquiring a write lock per check. `evaluateAll()` consists only of in-memory comparisons against `time.Now()` — for 1,000 checks this takes microseconds, so the lock held duration is negligible. This approach eliminates the TOCTOU window that would otherwise exist between the read scan and the write transition.
+`evaluateAll()` uses a deliberate two-phase design to balance correctness and lock contention:
+
+- **Phase 1 (write lock held):** iterate all checks, skip those that are not `"up"` or not yet overdue, and atomically persist each `up → down` transition via the `WithWriteLock` update closure. Collect each transitioned check into a local slice. The write lock is then released. This phase contains only in-memory comparisons and SQLite `UPDATE` calls — no network I/O.
+- **Phase 2 (write lock released):** for each transitioned check, call `channelRepo.ListByCheckID` and enqueue one `AlertEvent` per channel via a non-blocking send. Moving the repository query and channel send outside the lock prevents DB latency from blocking concurrent ping handlers that also need the write lock.
+
+This eliminates the TOCTOU window that would exist between a read scan and a separate write transition, while ensuring the write lock is held only for the DB persists, not for subsequent network-bound work.
 
 **Write-through, not write-behind:** every state mutation writes to SQLite in the same transaction before releasing the lock. The cache is always consistent with the database. On startup, the cache is hydrated from SQLite.
 
