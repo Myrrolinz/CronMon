@@ -9,6 +9,7 @@ import (
 
 	"github.com/myrrolinz/cronmon/internal/model"
 	"github.com/myrrolinz/cronmon/internal/notify"
+	"github.com/myrrolinz/cronmon/internal/repository"
 )
 
 // ---------------------------------------------------------------------------
@@ -120,7 +121,7 @@ func makeWorkerEvent(channelType string) model.AlertEvent {
 func startWorker(
 	t *testing.T,
 	notifiers map[string]notify.Notifier,
-	repo *mockNotifRepo,
+	repo repository.NotificationRepository,
 	opts ...notify.WorkerOption,
 ) (chan model.AlertEvent, *notify.Worker) {
 	t.Helper()
@@ -317,5 +318,84 @@ func TestWorker_RepoErrorDoesNotPanic(t *testing.T) {
 	// No panic, and Send was called for both events
 	if notifier.callCount() != 2 {
 		t.Errorf("expected 2 Send calls, got %d", notifier.callCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// fkErrNotifRepo — simulates a FK violation when ChannelID is non-nil,
+// succeeds when ChannelID is nil (mirrors the ON DELETE SET NULL schema intent).
+// ---------------------------------------------------------------------------
+
+type fkErrNotifRepo struct {
+	mu            sync.Mutex
+	notifications []*model.Notification
+}
+
+func (r *fkErrNotifRepo) Create(_ context.Context, n *model.Notification) error {
+	if n.ChannelID != nil {
+		return errors.New("FOREIGN KEY constraint failed")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *n
+	r.notifications = append(r.notifications, &cp)
+	return nil
+}
+
+func (r *fkErrNotifRepo) ListByCheckID(_ context.Context, _ string, _ int) ([]*model.Notification, error) {
+	return nil, nil
+}
+
+func (r *fkErrNotifRepo) last() *model.Notification {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.notifications) == 0 {
+		return nil
+	}
+	return r.notifications[len(r.notifications)-1]
+}
+
+// TestWorker_FKViolationRetriesWithNilChannelID verifies that when
+// notifRepo.Create fails (e.g. FK violation because the channel was deleted
+// between enqueue and write) the worker retries with ChannelID=nil so the
+// audit record is still preserved.
+func TestWorker_FKViolationRetriesWithNilChannelID(t *testing.T) {
+	notifier := &mockNotifier{channelType: "email"}
+	repo := &fkErrNotifRepo{}
+	ch, w := startWorker(t, map[string]notify.Notifier{"email": notifier}, repo)
+
+	ch <- makeWorkerEvent("email")
+	close(ch)
+	w.Wait()
+
+	rec := repo.last()
+	if rec == nil {
+		t.Fatal("expected notification record after FK retry")
+	}
+	if rec.ChannelID != nil {
+		t.Errorf("expected ChannelID=nil after FK retry, got %v", *rec.ChannelID)
+	}
+}
+
+// TestWorker_StartIdempotent verifies that calling Start more than once does
+// not spawn additional consumers, which would cause duplicate deliveries.
+func TestWorker_StartIdempotent(t *testing.T) {
+	notifier := &mockNotifier{channelType: "email"}
+	repo := &mockNotifRepo{}
+	// startWorker calls Start once internally
+	ch, w := startWorker(t, map[string]notify.Notifier{"email": notifier}, repo)
+
+	// Second call must be a no-op
+	w.Start()
+
+	ch <- makeWorkerEvent("email")
+	close(ch)
+	w.Wait()
+
+	if notifier.callCount() != 1 {
+		t.Errorf("expected exactly 1 Send call, got %d — double-Start spawned extra consumer", notifier.callCount())
+	}
+	if repo.count() != 1 {
+		t.Errorf("expected exactly 1 notification record, got %d", repo.count())
 	}
 }

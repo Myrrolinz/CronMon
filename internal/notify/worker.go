@@ -42,6 +42,7 @@ type Worker struct {
 	notifRepo   repository.NotificationRepository
 	sendTimeout time.Duration
 	wg          sync.WaitGroup
+	startOnce   sync.Once
 }
 
 // NewWorker constructs a Worker.  Call Start to begin processing.
@@ -66,10 +67,12 @@ func NewWorker(
 }
 
 // Start launches the background goroutine that ranges over alertCh.
-// It must be called exactly once.
+// Safe to call multiple times; only the first call has any effect.
 func (w *Worker) Start() {
-	w.wg.Add(1)
-	go w.run()
+	w.startOnce.Do(func() {
+		w.wg.Add(1)
+		go w.run()
+	})
 }
 
 // Wait blocks until alertCh has been closed and all queued events have been
@@ -87,8 +90,8 @@ func (w *Worker) run() {
 }
 
 // dispatch sends a single AlertEvent to the appropriate notifier and writes
-// the outcome to the notifications table.  It never panics; errors are logged
-// and captured in the notification record.
+// the outcome to the notifications table.  Errors from notifier.Send and
+// repository writes are logged and captured in the notification record.
 func (w *Worker) dispatch(event model.AlertEvent) {
 	sendCtx, cancel := context.WithTimeout(context.Background(), w.sendTimeout)
 	defer cancel()
@@ -128,10 +131,23 @@ func (w *Worker) dispatch(event model.AlertEvent) {
 		}
 	}
 
-	if err := w.notifRepo.Create(context.Background(), n); err != nil {
-		slog.Error("notifier worker: failed to record notification",
-			"check_id", event.Check.ID,
-			"error", err,
-		)
+	const repoTimeout = 5 * time.Second
+	repoCtx, repoCancel := context.WithTimeout(context.Background(), repoTimeout)
+	defer repoCancel()
+
+	if err := w.notifRepo.Create(repoCtx, n); err != nil {
+		// Possible FK violation: the channel may have been deleted between
+		// the scheduler enqueuing the event and this write.  The schema
+		// explicitly supports NULL channel_id (ON DELETE SET NULL) to
+		// preserve the audit record — retry with a nil ChannelID.
+		n.ChannelID = nil
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), repoTimeout)
+		defer retryCancel()
+		if retryErr := w.notifRepo.Create(retryCtx, n); retryErr != nil {
+			slog.Error("notifier worker: failed to record notification",
+				"check_id", event.Check.ID,
+				"error", retryErr,
+			)
+		}
 	}
 }
