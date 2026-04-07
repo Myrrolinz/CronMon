@@ -148,6 +148,7 @@ type StateCache struct {
 - `WithWriteLock(fn func(checks []*model.Check, update func(*model.Check) error))` — holds `mu.Lock()` for the entire duration of `fn`; passes value-copies for reading, and an `update` closure that writes the updated check to both DB and cache under the same lock. Used exclusively by the scheduler's `evaluateAll()` to eliminate TOCTOU.
 - Return value copies, never pointers to internal map entries, to prevent external mutation
 - Tests: concurrent read/write test with `-race`; hydration test; write-through consistency test; `WithWriteLock` test verifies DB and cache are both updated atomically
+- **Integration test** (`internal/cache/cache_integration_test.go`) with real SQLite-backed `CheckRepository`: verify `Hydrate` correctly round-trips all `Check` fields from SQLite; `Set` write-through actually persists the row (confirmed by querying the DB directly); `WithWriteLock` atomicity — status visible in SQLite immediately after the closure returns; `Delete` removes from both map and DB. This catches any mismatch between the mock's assumed behavior and the actual SQL column mapping.
 - Dependencies: Steps 4, 5
 - Risk: Medium (concurrency)
 
@@ -227,6 +228,7 @@ type Scheduler struct {
 - `cleanupOldPings(ctx)` — runs on 1h ticker; calls `cache.Snapshot()` (RLock) to get check IDs, then calls `pingRepo.DeleteOldest(ctx, checkID, 1000)` for every check — runs entirely outside the write lock
 - Startup reconciliation: before first regular tick, run `evaluateAll` once to catch checks that went down while the process was offline
 - Tests: unit tests with mock cache and repos; test `up→down` transition; test paused/new/already-down skipped; test non-blocking drop when channel full; test cleanup called on tick; test `Stop()` idempotent (no panic on double call); test `New()` panics on zero/negative interval; race detector
+- **Integration test** (`internal/scheduler/scheduler_integration_test.go`) with real `StateCache` + real SQLite: (1) seed an `up` check with an overdue `next_expected_at`, call `evaluateAll`, then query SQLite directly to confirm `status = 'down'` was persisted — validates that the SQL `UPDATE` is correctly wired through `WithWriteLock`; (2) seed an overdue check before `Start()`, confirm startup reconciliation transitions it before the first regular tick. These validate the mock cannot: that the correct SQL column is written and the cache/DB stay consistent under the real driver.
 - Dependencies: Steps 6, 7, 8
 - Risk: High (concurrency; correct lock strategy; startup reconciliation ordering)
 
@@ -279,6 +281,7 @@ For **fail** ping:
 - Source IP: `r.RemoteAddr` by default; if `TRUSTED_PROXY=true`, read `X-Forwarded-For` first header value
 - Response: always `200 OK` with body `"OK\n"` text/plain
 - Tests: table-driven covering: unknown UUID (200 no panic), new→up transition, up stays up, down→up recovery via success ping, down→up recovery via fail ping, paused check ignored, start ping updates `next_expected_at` but does NOT change status, start ping on down check stays down, fail ping recorded
+- **Integration test** (`internal/handler/ping_integration_test.go`) with real `StateCache` + real SQLite + real `PingRepository`: (1) new→up transition — after a success ping, query SQLite to confirm `checks.status = 'up'` and a `pings` row exists; (2) down→up recovery — confirm an `AlertEvent` is enqueued on `alertCh` and the ping row is written; (3) start ping on up check — confirm `next_expected_at` is extended in SQLite but `status` remains `up`. These catch bugs in the cache write-through and ping insertion that HTTP-level unit tests (which test response codes) cannot.
 - Dependencies: Steps 6, 7, 9
 - Risk: Medium (state transitions, concurrent pings)
 
@@ -691,10 +694,27 @@ Every package gets a `_test.go` file. Use table-driven tests. All tests pass wit
 | `middleware` | BasicAuth timing-safe; UUID path redaction |
 
 ### Integration Tests
-`internal/integration_test.go` (build tag `//go:build integration`):
-- Full flow: create check → receive ping → check goes up → miss ping → check goes down → receive notification
-- Startup reconciliation: populate DB with `up` + overdue check, restart scheduler, verify `down` transition fires
-- Graceful shutdown drain: fill alert channel, send SIGTERM, verify all events written
+
+Integration tests fall into two tiers:
+
+#### Tier 1 — Per-package (run with `go test ./...`, no build tag, use in-memory SQLite)
+
+These live next to the package they test and run on every CI push. They exist to validate cross-layer assumptions that mocks cannot catch — primarily that real SQL statements match the Go struct fields and that FK/constraint behavior matches the schema.
+
+| File | Added in | What it validates |
+|---|---|---|
+| `internal/repository/*_test.go` | Step 5 | All repo CRUD, FK constraints, cascade deletes — already done |
+| `internal/notify/worker_integration_test.go` | Step 10 | Worker + real SQLite: success write; FK retry with deleted channel preserves audit row |
+| `internal/cache/cache_integration_test.go` | Step 6 | `StateCache` + real SQLite: `Hydrate` round-trip; `Set` write-through; `WithWriteLock` atomicity; `Delete` removes from both |
+| `internal/scheduler/scheduler_integration_test.go` | Step 9 | `evaluateAll` with real cache + real SQLite: `up→down` persisted to DB; startup reconciliation transitions pre-seeded overdue check |
+| `internal/handler/ping_integration_test.go` | Step 11 | Ping handler + real cache + real SQLite: new→up writes ping row; down→up enqueues `AlertEvent`; start ping extends `next_expected_at` in DB |
+
+#### Tier 2 — Full pipeline (`internal/integration_test.go`, build tag `//go:build integration`)
+
+Run in CI on merge to `main` only (slower, wires every component). These test multi-component interactions that Tier 1 tests cannot cover in isolation:
+- **Full alert flow:** create check → receive ping → check goes `up` → miss ping → scheduler transitions to `down` → Worker dispatches → notification row written to SQLite
+- **Startup reconciliation end-to-end:** populate DB with `up` + overdue check, create a new `Scheduler` (cold start), verify `down` transition fires before first regular tick and notification is enqueued
+- **Graceful shutdown drain:** fill `alertCh` with 10 events, call `sched.Stop()` + `close(alertCh)` + `worker.Wait()`, verify all 10 notification rows exist in SQLite before `Wait()` returns
 
 ### Coverage Target
 ≥ 80% per package, ≥ 80% overall. Enforced in CI.
