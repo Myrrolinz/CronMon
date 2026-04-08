@@ -93,8 +93,8 @@ func (h *PingHandler) handle(w http.ResponseWriter, r *http.Request, pingType mo
 		SourceIP:  h.extractSourceIP(r),
 	}
 	if err := h.pingRepo.Create(ctx, ping); err != nil {
-		slog.Error("ping: failed to record ping",
-			"check_id", check.ID, "type", pingType, "err", err)
+		slog.Error("ping: failed to record ping", //nolint:gosec // G706: values sanitised by logSafe
+			"check_id", logSafe(check.ID), "type", logSafe(string(pingType)), "err", err)
 	}
 
 	switch pingType {
@@ -115,8 +115,8 @@ func (h *PingHandler) handleStart(ctx context.Context, check *model.Check, now t
 	check.NextExpectedAt = &next
 	check.UpdatedAt = now
 	if err := h.cache.Set(ctx, check); err != nil {
-		slog.Error("ping: failed to update check after start ping",
-			"check_id", check.ID, "err", err)
+		slog.Error("ping: failed to update check after start ping", //nolint:gosec // G706: value sanitised by logSafe
+			"check_id", logSafe(check.ID), "err", err)
 	}
 }
 
@@ -136,16 +136,16 @@ func (h *PingHandler) handleComplete(ctx context.Context, check *model.Check, no
 
 	next, err := schedule.NextExpectedAt(check.Schedule, check.Grace, now)
 	if err != nil {
-		slog.Error("ping: failed to compute next_expected_at",
-			"check_id", check.ID, "schedule", check.Schedule, "err", err)
+		slog.Error("ping: failed to compute next_expected_at", //nolint:gosec // G706: values sanitised by logSafe
+			"check_id", logSafe(check.ID), "schedule", logSafe(check.Schedule), "err", err)
 	} else {
 		check.NextExpectedAt = &next
 	}
 
 	check.UpdatedAt = now
 	if err := h.cache.Set(ctx, check); err != nil {
-		slog.Error("ping: failed to update check after ping",
-			"check_id", check.ID, "err", err)
+		slog.Error("ping: failed to update check after ping", //nolint:gosec // G706: value sanitised by logSafe
+			"check_id", logSafe(check.ID), "err", err)
 		return
 	}
 
@@ -163,8 +163,8 @@ func (h *PingHandler) handleComplete(ctx context.Context, check *model.Check, no
 func (h *PingHandler) enqueueAlerts(ctx context.Context, check *model.Check, alertType model.AlertType) {
 	channels, err := h.channelRepo.ListByCheckID(ctx, check.ID)
 	if err != nil {
-		slog.Error("ping: failed to list channels for alert",
-			"check_id", check.ID, "alert_type", alertType, "err", err)
+		slog.Error("ping: failed to list channels for alert", //nolint:gosec // G706: values sanitised by logSafe
+			"check_id", logSafe(check.ID), "alert_type", logSafe(string(alertType)), "err", err)
 		return
 	}
 	for _, ch := range channels {
@@ -176,8 +176,8 @@ func (h *PingHandler) enqueueAlerts(ctx context.Context, check *model.Check, ale
 		select {
 		case h.alertCh <- event:
 		default:
-			slog.Warn("ping: alert channel full, dropping event",
-				"check_id", check.ID, "channel_id", ch.ID, "alert_type", alertType)
+			slog.Warn("ping: alert channel full, dropping event", //nolint:gosec // G706: values sanitised by logSafe
+				"check_id", logSafe(check.ID), "channel_id", ch.ID, "alert_type", logSafe(string(alertType)))
 		}
 	}
 }
@@ -200,6 +200,12 @@ func (h *PingHandler) extractSourceIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return ip
+}
+
+// logSafe strips newline and carriage-return characters from s to prevent
+// log-injection attacks (gosec G706).
+func logSafe(s string) string {
+	return strings.NewReplacer("\n", "", "\r", "").Replace(s)
 }
 
 // writeOK writes the standard 200 OK ping response.
