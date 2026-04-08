@@ -86,6 +86,18 @@ func (h *PingHandler) handle(w http.ResponseWriter, r *http.Request, pingType mo
 		return
 	}
 
+	// Update the cache (and write-through to SQLite) before recording the ping
+	// so the scheduler sees the refreshed next_expected_at immediately and
+	// cannot race to mark the check DOWN between the two writes.
+	switch pingType {
+	case model.PingStart:
+		h.handleStart(ctx, check, now)
+	case model.PingSuccess:
+		h.handleComplete(ctx, check, now, false)
+	case model.PingFail:
+		h.handleComplete(ctx, check, now, true)
+	}
+
 	ping := &model.Ping{
 		CheckID:   check.ID,
 		Type:      pingType,
@@ -95,15 +107,6 @@ func (h *PingHandler) handle(w http.ResponseWriter, r *http.Request, pingType mo
 	if err := h.pingRepo.Create(ctx, ping); err != nil {
 		slog.Error("ping: failed to record ping", //nolint:gosec // G706: values sanitised by logSafe
 			"check_id", logSafe(check.ID), "type", logSafe(string(pingType)), "err", err)
-	}
-
-	switch pingType {
-	case model.PingStart:
-		h.handleStart(ctx, check, now)
-	case model.PingSuccess:
-		h.handleComplete(ctx, check, now, false)
-	case model.PingFail:
-		h.handleComplete(ctx, check, now, true)
 	}
 
 	writeOK(w)

@@ -478,7 +478,11 @@ func TestPingHandler_PausedCheckIgnored(t *testing.T) {
 
 func TestPingHandler_Start_UpdatesNextExpectedAtButNotStatus(t *testing.T) {
 	c := makeCheck("check-1", model.StatusUp)
-	originalNext := *c.NextExpectedAt
+	// Seed next_expected_at in the past so that now+grace is unambiguously
+	// after it even at the same timestamp resolution (avoids time-flakiness).
+	pastNext := time.Now().UTC().Add(-30 * time.Minute)
+	c.NextExpectedAt = &pastNext
+	originalNext := pastNext
 	sc, repo := makeCache(t, c)
 	pr := &mockPingRepo{}
 	cr := newMockChannelRepo()
