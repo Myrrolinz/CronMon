@@ -217,7 +217,8 @@ CREATE TABLE checks (
     next_expected_at DATETIME,                        -- deadline: schedule + grace, updated each ping
     created_at      DATETIME    NOT NULL,
     updated_at      DATETIME    NOT NULL,
-    tags            TEXT        NOT NULL DEFAULT ''   -- comma-separated, empty string not NULL
+    tags            TEXT        NOT NULL DEFAULT '',   -- comma-separated, empty string not NULL
+    notify_on_fail  INTEGER     NOT NULL DEFAULT 0    -- boolean (0/1); opt-in: fire an AlertFail on each /fail ping
 );
 
 CREATE TABLE pings (
@@ -450,6 +451,7 @@ db.Close()
 | `new` | `up` | Success or fail ping received | No |
 | `up` | `down` | `now > next_expected_at` (scheduler tick) | Yes — **down** alert |
 | `down` | `up` | Success or fail ping received | Yes — **recovery** alert |
+| `up` | `up` | `/fail` ping received, `notify_on_fail = true` | Yes — **fail** alert (status unchanged) |
 | `new` or `down` | *(no change)* | `/start` ping received | No — status unchanged; only extends `next_expected_at` |
 | `up` | `paused` | Manual pause (dashboard/API) | No |
 | `down` | `paused` | Manual pause | No |
@@ -484,7 +486,7 @@ This prevents the silent failure window that would occur if CronMon was restarte
 type AlertEvent struct {
     Check     Check
     Channel   Channel
-    AlertType string  // "down" | "up"
+    AlertType string  // "down" | "up" | "fail"
 }
 
 type Notifier interface {

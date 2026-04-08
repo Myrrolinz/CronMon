@@ -68,6 +68,8 @@ Each check supports three ping endpoints:
 
 This three-state model lets users signal intent, not just presence — a deliberate improvement over minicron.
 
+**`notify_on_fail` (opt-in per check):** When enabled, a `/fail` ping always fires an alert regardless of whether the check was already `up`. This is opt-in to avoid noise for operators who only care about missed pings, not individual run outcomes.
+
 ---
 
 ## 3. Feature Scope

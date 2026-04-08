@@ -102,11 +102,14 @@ func (n *EmailNotifier) Send(ctx context.Context, event model.AlertEvent) error 
 // The format mandated by the spec:
 //
 //	DOWN:      [CronMon] ⚠ "CheckName" is DOWN
+//	FAIL:      [CronMon] ✗ "CheckName" FAILED
 //	RECOVERED: [CronMon] ✓ "CheckName" RECOVERED
 func buildSubject(event model.AlertEvent) string {
 	switch event.AlertType {
 	case model.AlertDown:
 		return fmt.Sprintf(`[CronMon] ⚠ "%s" is DOWN`, event.Check.Name)
+	case model.AlertFail:
+		return fmt.Sprintf(`[CronMon] ✗ "%s" FAILED`, event.Check.Name)
 	default: // AlertUp
 		return fmt.Sprintf(`[CronMon] ✓ "%s" RECOVERED`, event.Check.Name)
 	}
@@ -175,9 +178,13 @@ func buildBodies(event model.AlertEvent, baseURL string) (plain, html string, er
 
 	status := "⚠ DOWN"
 	headingColor := "#cc0000"
-	if event.AlertType == model.AlertUp {
+	switch event.AlertType {
+	case model.AlertUp:
 		status = "✓ RECOVERED"
 		headingColor = "#007700"
+	case model.AlertFail:
+		status = "✗ FAILED"
+		headingColor = "#cc6600"
 	}
 
 	pingURL := strings.TrimRight(baseURL, "/") + "/ping/" + event.Check.ID

@@ -29,28 +29,30 @@ func NewCheckRepository(db *sql.DB) CheckRepository {
 }
 
 const checkSelectCols = `id, name, slug, schedule, grace, status,
-	last_ping_at, next_expected_at, created_at, updated_at, tags`
+	last_ping_at, next_expected_at, created_at, updated_at, tags, notify_on_fail`
 
 func scanCheck(s rowScanner) (*model.Check, error) {
 	var (
-		c          model.Check
-		statusStr  string
-		slugNS     sql.NullString
-		lastPingNS sql.NullString
-		nextExpNS  sql.NullString
-		createdStr string
-		updatedStr string
+		c            model.Check
+		statusStr    string
+		slugNS       sql.NullString
+		lastPingNS   sql.NullString
+		nextExpNS    sql.NullString
+		createdStr   string
+		updatedStr   string
+		notifyOnFail int
 	)
 	err := s.Scan(
 		&c.ID, &c.Name, &slugNS, &c.Schedule, &c.Grace,
 		&statusStr, &lastPingNS, &nextExpNS,
-		&createdStr, &updatedStr, &c.Tags,
+		&createdStr, &updatedStr, &c.Tags, &notifyOnFail,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	c.Status = model.Status(statusStr)
+	c.NotifyOnFail = notifyOnFail != 0
 
 	if slugNS.Valid {
 		c.Slug = &slugNS.String
@@ -79,15 +81,19 @@ func scanCheck(s rowScanner) (*model.Check, error) {
 func (r *sqliteCheckRepo) Create(ctx context.Context, c *model.Check) error {
 	const q = `
 INSERT INTO checks
-	(id, name, slug, schedule, grace, status, last_ping_at, next_expected_at, created_at, updated_at, tags)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	(id, name, slug, schedule, grace, status, last_ping_at, next_expected_at, created_at, updated_at, tags, notify_on_fail)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
+	notifyOnFail := 0
+	if c.NotifyOnFail {
+		notifyOnFail = 1
+	}
 	_, err := r.db.ExecContext(ctx, q,
 		c.ID, c.Name, stringPtrToNull(c.Slug),
 		c.Schedule, c.Grace, string(c.Status),
 		formatTimePtr(c.LastPingAt), formatTimePtr(c.NextExpectedAt),
 		formatTime(c.CreatedAt), formatTime(c.UpdatedAt),
-		c.Tags,
+		c.Tags, notifyOnFail,
 	)
 	if err != nil {
 		return fmt.Errorf("checkRepo.Create: %w", err)
@@ -148,13 +154,17 @@ func (r *sqliteCheckRepo) Update(ctx context.Context, c *model.Check) error {
 	const q = `
 UPDATE checks SET
 	name = ?, slug = ?, schedule = ?, grace = ?, status = ?,
-	last_ping_at = ?, next_expected_at = ?, updated_at = ?, tags = ?
+	last_ping_at = ?, next_expected_at = ?, updated_at = ?, tags = ?, notify_on_fail = ?
 WHERE id = ?`
 
+	notifyOnFail := 0
+	if c.NotifyOnFail {
+		notifyOnFail = 1
+	}
 	res, err := r.db.ExecContext(ctx, q,
 		c.Name, stringPtrToNull(c.Slug), c.Schedule, c.Grace, string(c.Status),
 		formatTimePtr(c.LastPingAt), formatTimePtr(c.NextExpectedAt),
-		formatTime(c.UpdatedAt), c.Tags,
+		formatTime(c.UpdatedAt), c.Tags, notifyOnFail,
 		c.ID,
 	)
 	if err != nil {
