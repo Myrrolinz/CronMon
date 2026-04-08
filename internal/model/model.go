@@ -37,6 +37,7 @@ type AlertType string
 const (
 	AlertDown AlertType = "down"
 	AlertUp   AlertType = "up"
+	AlertFail AlertType = "fail" // fired when a /fail ping is received and the check has NotifyOnFail=true
 )
 
 // ---------------------------------------------------------------------------
@@ -56,7 +57,8 @@ type Check struct {
 	NextExpectedAt *time.Time `json:"next_expected_at"` // nil until first ping or creation
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
-	Tags           string     `json:"tags"` // comma-separated; empty string when none
+	Tags           string     `json:"tags"`           // comma-separated; empty string when none
+	NotifyOnFail   bool       `json:"notify_on_fail"` // when true, a /fail ping always fires an AlertFail event
 }
 
 // Ping represents a single ping event recorded from a monitored job.

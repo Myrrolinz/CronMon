@@ -13,7 +13,8 @@ CREATE TABLE checks (
     next_expected_at DATETIME,
     created_at       DATETIME NOT NULL,
     updated_at       DATETIME NOT NULL,
-    tags             TEXT     NOT NULL DEFAULT ''
+    tags             TEXT     NOT NULL DEFAULT '',
+    notify_on_fail   INTEGER  NOT NULL DEFAULT 0  -- boolean (0=false, 1=true); opt-in fail alerts
 );
 
 CREATE TABLE pings (
@@ -42,7 +43,7 @@ CREATE TABLE notifications (
     id         INTEGER  PRIMARY KEY AUTOINCREMENT,
     check_id   TEXT     NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
     channel_id INTEGER           REFERENCES channels(id) ON DELETE SET NULL,
-    type       TEXT     NOT NULL CHECK(type IN ('down','up')),
+    type       TEXT     NOT NULL CHECK(type IN ('down','up','fail')),
     sent_at    DATETIME NOT NULL,
     error      TEXT
 );

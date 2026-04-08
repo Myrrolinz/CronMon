@@ -69,10 +69,10 @@ CronMon is implemented in three independently deliverable phases, each producing
 **File:** `internal/model/model.go`
 
 - Action: Define all structs: `Check`, `Ping`, `Channel`, `CheckChannel`, `Notification`, `AlertEvent`
-- `Check` fields: `ID`, `Name`, `Slug`, `Schedule`, `Grace`, `Status`, `LastPingAt *time.Time`, `NextExpectedAt *time.Time`, `CreatedAt`, `UpdatedAt`, `Tags`
+- `Check` fields: `ID`, `Name`, `Slug`, `Schedule`, `Grace`, `Status`, `LastPingAt *time.Time`, `NextExpectedAt *time.Time`, `CreatedAt`, `UpdatedAt`, `Tags`, `NotifyOnFail bool`
 - `Status` type as named string with constants: `StatusNew`, `StatusUp`, `StatusDown`, `StatusPaused`
 - `PingType` type with constants: `PingSuccess`, `PingStart`, `PingFail`
-- `AlertType` type with constants: `AlertDown`, `AlertUp`
+- `AlertType` type with constants: `AlertDown`, `AlertUp`, `AlertFail`
 - No behaviour — pure data structs
 - Tests: verify zero values, JSON marshaling round-trip
 - Dependencies: None
@@ -277,10 +277,11 @@ For **start** ping:
 For **fail** ping:
 1. Same state-transition logic as success: set `status = "up"` if was `new` or `down`, compute `next_expected_at = NextExpectedAt(schedule, grace, now)`, record ping with `type = "fail"`
 2. If recovery (was `down`): enqueue `AlertEvent{AlertType: "up"}` — a `/fail` ping means the job ran and finished (even though it failed), which IS a recovery from missed execution
+3. If `check.NotifyOnFail == true`: additionally enqueue `AlertEvent{AlertType: "fail"}` — regardless of previous status. This is opt-in; default is `false` to avoid noise for operators who only care about missed pings
 
 - Source IP: `r.RemoteAddr` by default; if `TRUSTED_PROXY=true`, read `X-Forwarded-For` first header value
 - Response: always `200 OK` with body `"OK\n"` text/plain
-- Tests: table-driven covering: unknown UUID (200 no panic), new→up transition, up stays up, down→up recovery via success ping, down→up recovery via fail ping, paused check ignored, start ping updates `next_expected_at` but does NOT change status, start ping on down check stays down, fail ping recorded
+- Tests: table-driven covering: unknown UUID (200 no panic), new→up transition, up stays up, down→up recovery via success ping, down→up recovery via fail ping, paused check ignored, start ping updates `next_expected_at` but does NOT change status, start ping on down check stays down, fail ping recorded, `NotifyOnFail=true` fires `AlertFail` on up check, `NotifyOnFail=false` suppresses alert, `NotifyOnFail=true` on down check enqueues both recovery and fail alerts, success ping never fires `AlertFail` even with `NotifyOnFail=true`
 - **Integration test** (`internal/handler/ping_integration_test.go`) with real `StateCache` + real SQLite + real `PingRepository`: (1) new→up transition — after a success ping, query SQLite to confirm `checks.status = 'up'` and a `pings` row exists; (2) down→up recovery — confirm an `AlertEvent` is enqueued on `alertCh` and the ping row is written; (3) start ping on up check — confirm `next_expected_at` is extended in SQLite but `status` remains `up`. These catch bugs in the cache write-through and ping insertion that HTTP-level unit tests (which test response codes) cannot.
 - Dependencies: Steps 6, 7, 9
 - Risk: Medium (state transitions, concurrent pings)
@@ -298,7 +299,7 @@ For **fail** ping:
 
 **Check handlers** (`check.go`):
 - `POST /checks` — parse form; validate (name required, schedule valid via `schedule.Validate`, grace ≥ 1 minute); generate UUIDv4; set `Slug = ""` (reserved, unused in v1); compute initial `next_expected_at = NextExpectedAt(schedule, grace, now)`; store via cache; redirect to `/checks/{id}`
-- `POST /checks/{id}` — update name, schedule, grace (must be ≥ 1), tags; recompute `next_expected_at` based on last ping or now; update via cache
+- `POST /checks/{id}` — update name, schedule, grace (must be ≥ 1), tags, `notify_on_fail` (boolean checkbox); recompute `next_expected_at` based on last ping or now; update via cache
 - `POST /checks/{id}/delete` — delete via cache; redirect to `/checks`  
 - `POST /checks/{id}/pause` — toggle `status` between `"paused"` and previous state (store `pre_pause_status` or default to `"new"`); update via cache
 
