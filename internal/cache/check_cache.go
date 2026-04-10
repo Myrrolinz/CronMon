@@ -33,6 +33,10 @@ func cloneCheck(c *model.Check) *model.Check {
 		s := *c.Slug
 		cp.Slug = &s
 	}
+	if c.PrePauseStatus != nil {
+		s := *c.PrePauseStatus
+		cp.PrePauseStatus = &s
+	}
 	if c.LastPingAt != nil {
 		t := *c.LastPingAt
 		cp.LastPingAt = &t
@@ -93,6 +97,23 @@ func (sc *StateCache) setLocked(ctx context.Context, c *model.Check) error {
 		return err
 	}
 	sc.checks[c.ID] = cloneCheck(c)
+	return nil
+}
+
+// Create inserts a new check into the database and adds it to the in-memory
+// cache. The mutex is held across both the DB insert and the map addition so
+// that readers never observe a partial state. If the database insert fails the
+// cache is not modified and the error is returned to the caller.
+func (sc *StateCache) Create(ctx context.Context, c *model.Check) error {
+	cp := cloneCheck(c)
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	if err := sc.repo.Create(ctx, cp); err != nil {
+		return fmt.Errorf("stateCache.Create: %w", err)
+	}
+	sc.checks[cp.ID] = cloneCheck(cp)
 	return nil
 }
 

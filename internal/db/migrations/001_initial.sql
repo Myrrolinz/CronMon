@@ -9,6 +9,7 @@ CREATE TABLE checks (
     grace            INTEGER  NOT NULL DEFAULT 10,
     status           TEXT     NOT NULL DEFAULT 'new'
                               CHECK(status IN ('new','up','down','paused')),
+    pre_pause_status TEXT,    -- status saved before pausing; restored on unpause; NULL if never paused
     last_ping_at     DATETIME,
     next_expected_at DATETIME,
     created_at       DATETIME NOT NULL,

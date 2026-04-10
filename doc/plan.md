@@ -2,7 +2,7 @@
 
 > **Status:** Ready for development  
 > **Version:** 1.0  
-> **Last Updated:** 2026-03-30  
+> **Last Updated:** 2026-04-10  
 > **Based on:** ARCHITECTURE.md v1.1, CRONMON_DESIGN.md
 
 ---
@@ -69,7 +69,7 @@ CronMon is implemented in three independently deliverable phases, each producing
 **File:** `internal/model/model.go`
 
 - Action: Define all structs: `Check`, `Ping`, `Channel`, `CheckChannel`, `Notification`, `AlertEvent`
-- `Check` fields: `ID`, `Name`, `Slug`, `Schedule`, `Grace`, `Status`, `LastPingAt *time.Time`, `NextExpectedAt *time.Time`, `CreatedAt`, `UpdatedAt`, `Tags`, `NotifyOnFail bool`
+- `Check` fields: `ID`, `Name`, `Slug`, `Schedule`, `Grace`, `Status`, `PrePauseStatus *Status`, `LastPingAt *time.Time`, `NextExpectedAt *time.Time`, `CreatedAt`, `UpdatedAt`, `Tags`, `NotifyOnFail bool`
 - `Status` type as named string with constants: `StatusNew`, `StatusUp`, `StatusDown`, `StatusPaused`
 - `PingType` type with constants: `PingSuccess`, `PingStart`, `PingFail`
 - `AlertType` type with constants: `AlertDown`, `AlertUp`, `AlertFail`
@@ -293,21 +293,21 @@ For **fail** ping:
 
 **Basic Auth middleware** (`auth.go`):
 - `BasicAuth(username, password string) func(http.Handler) http.Handler`
-- Uses `subtle.ConstantTimeCompare` on both username and password — compare both regardless of username match to avoid timing oracle
+- Credentials are SHA-256 hashed before `subtle.ConstantTimeCompare` so both slices are always 32 bytes, eliminating the length-based timing oracle present in raw-string comparison. Both username and password are always compared regardless of whether the username matches.
 - Returns `401 WWW-Authenticate: Basic realm="CronMon"` on failure
 - Applied to all routes except `/ping/*`
 
 **Check handlers** (`check.go`):
 - `POST /checks` — parse form; validate (name required, schedule valid via `schedule.Validate`, grace ≥ 1 minute); generate UUIDv4; set `Slug = ""` (reserved, unused in v1); compute initial `next_expected_at = NextExpectedAt(schedule, grace, now)`; store via cache; redirect to `/checks/{id}`
 - `POST /checks/{id}` — update name, schedule, grace (must be ≥ 1), tags, `notify_on_fail` (boolean checkbox); recompute `next_expected_at` based on last ping or now; update via cache
-- `POST /checks/{id}/delete` — delete via cache; redirect to `/checks`  
-- `POST /checks/{id}/pause` — toggle `status` between `"paused"` and previous state (store `pre_pause_status` or default to `"new"`); update via cache
+- `POST /checks/{id}/delete` — delete via cache; redirect to `/checks`; idempotent — deleting a non-existent check returns a redirect, not an error
+- `POST /checks/{id}/pause` — if not paused: save current status to `pre_pause_status`, set status to `"paused"`; if paused: restore status from `pre_pause_status` (default `"new"` if nil), clear `pre_pause_status`; update via cache
 
 **CSRF note:** All state-mutating form endpoints are POST-only and protected by basic auth — no additional CSRF token needed for v1 (basic auth per-request provides equivalent protection).
 
-**`_method` override middleware:** reads `_method` hidden field on POST requests and rewrites `r.Method` — apply only to auth-protected routes, never to `/ping/*`
+**`_method` override middleware:** reads `_method` hidden field on POST requests and rewrites `r.Method` — only `PUT`, `PATCH`, and `DELETE` are accepted; any other value is ignored to prevent method rewriting to dangerous methods such as `TRACE` or `CONNECT`. Apply only to auth-protected routes, never to `/ping/*`
 
-- Tests: all CRUD operations; auth middleware timing-safe test; invalid schedule rejected with 400; pause toggle; redirect behavior
+- Tests: all CRUD operations; auth middleware timing-safe test; invalid schedule rejected with 400; pause toggle preserves and restores pre-pause status; delete is idempotent; redirect behavior; `_method` override only rewrites to whitelisted methods
 - Dependencies: Steps 6, 7
 - Risk: Low
 
