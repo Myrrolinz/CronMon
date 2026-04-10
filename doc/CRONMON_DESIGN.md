@@ -161,56 +161,67 @@ This three-state model lets users signal intent, not just presence — a deliber
 
 ## 5. Data Model
 
+The authoritative schema lives in `internal/db/migrations/001_initial.sql`. The abbreviated form below highlights the key design choices:
+
 ```sql
 -- Core check definition
 CREATE TABLE checks (
-    id          TEXT PRIMARY KEY,  -- UUID
-    name        TEXT NOT NULL,
-    slug        TEXT UNIQUE,       -- human-readable URL fragment
-    schedule    TEXT NOT NULL,     -- cron expression e.g. "0 2 * * *"
-    grace       INTEGER NOT NULL,  -- grace period in minutes
-    status      TEXT NOT NULL DEFAULT 'new',  -- new|up|down|paused
-    last_ping   DATETIME,
-    next_ping   DATETIME,          -- computed from schedule
-    created_at  DATETIME NOT NULL,
-    tags        TEXT               -- comma-separated
+    id               TEXT     PRIMARY KEY,  -- UUIDv4
+    name             TEXT     NOT NULL,
+    slug             TEXT     UNIQUE,       -- reserved for future human-readable URLs; NULL in v1
+    schedule         TEXT     NOT NULL,     -- 5-field cron expression e.g. "0 2 * * *"
+    grace            INTEGER  NOT NULL,     -- grace period in minutes; minimum 1
+    status           TEXT     NOT NULL DEFAULT 'new',  -- new|up|down|paused
+    pre_pause_status TEXT,                  -- status saved on pause; restored on unpause; NULL if never paused
+    last_ping_at     DATETIME,              -- most recent ping of any type
+    next_expected_at DATETIME,              -- deadline: next schedule occurrence + grace
+    created_at       DATETIME NOT NULL,
+    updated_at       DATETIME NOT NULL,
+    tags             TEXT     NOT NULL DEFAULT '',  -- comma-separated
+    notify_on_fail   INTEGER  NOT NULL DEFAULT 0   -- 0=false, 1=true; opt-in fail alerts
 );
 
 -- Every ping received
 CREATE TABLE pings (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    check_id    TEXT NOT NULL REFERENCES checks(id),
-    type        TEXT NOT NULL,     -- success|start|fail
+    check_id    TEXT    NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
+    type        TEXT    NOT NULL CHECK(type IN ('success','start','fail')),
     created_at  DATETIME NOT NULL,
-    source_ip   TEXT
+    source_ip   TEXT    NOT NULL DEFAULT ''
 );
 
 -- Notification channel configuration
 CREATE TABLE channels (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    type        TEXT NOT NULL,     -- email|slack|webhook
-    name        TEXT NOT NULL,
-    config      TEXT NOT NULL,     -- JSON: {"address": "..."} or {"url": "..."}
+    type        TEXT    NOT NULL CHECK(type IN ('email','slack','webhook')),
+    name        TEXT    NOT NULL,
+    config      TEXT    NOT NULL,  -- JSON blob, validated on write per channel type
     created_at  DATETIME NOT NULL
 );
 
 -- Many-to-many: which checks notify which channels
 CREATE TABLE check_channels (
-    check_id    TEXT NOT NULL REFERENCES checks(id),
-    channel_id  INTEGER NOT NULL REFERENCES channels(id),
+    check_id    TEXT    NOT NULL REFERENCES checks(id)    ON DELETE CASCADE,
+    channel_id  INTEGER NOT NULL REFERENCES channels(id)  ON DELETE CASCADE,
     PRIMARY KEY (check_id, channel_id)
 );
 
--- Alert history
+-- Alert history (channel_id NULLable to preserve history after channel deletion)
 CREATE TABLE notifications (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    check_id    TEXT NOT NULL REFERENCES checks(id),
-    channel_id  INTEGER NOT NULL REFERENCES channels(id),
-    type        TEXT NOT NULL,     -- down|up
+    id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+    check_id    TEXT     NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
+    channel_id  INTEGER           REFERENCES channels(id) ON DELETE SET NULL,
+    type        TEXT     NOT NULL CHECK(type IN ('down','up','fail')),
     sent_at     DATETIME NOT NULL,
-    error       TEXT               -- null if delivered successfully
+    error       TEXT     -- NULL if delivered successfully
 );
 ```
+
+**Key design notes:**
+
+- `pre_pause_status` — persists the check's status before it is paused so that unpausing correctly restores the original state. Without this field, a `down` check paused and then unpaused would incorrectly appear `up`, silently hiding an ongoing outage.
+- `last_ping_at` / `next_expected_at` — replaced the original design's `last_ping` / `next_ping` column names for clarity.
+- `notifications.channel_id` — uses `ON DELETE SET NULL` (not `CASCADE`) so alert history is preserved even after a channel is removed.
 
 ## 6. Deployment Story
 
@@ -322,5 +333,5 @@ docker-compose up -d
 
 ---
 
-*Last updated: 2026-02-26*
+*Last updated: 2026-04-10*
 *Status: Pre-development — design phase*

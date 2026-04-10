@@ -1,8 +1,8 @@
 # CronMon — Architecture Document
 
-> **Status:** Pre-development  
-> **Version:** 1.1  
-> **Last Updated:** 2026-03-30  
+> **Status:** In development  
+> **Version:** 1.2  
+> **Last Updated:** 2026-04-10  
 > **Authors:** Engineering
 
 ---
@@ -206,19 +206,20 @@ cronmon/
 -- All DATETIME columns store UTC in RFC3339 format ("2006-01-02T15:04:05Z").
 
 CREATE TABLE checks (
-    id              TEXT        PRIMARY KEY,          -- UUIDv4
-    name            TEXT        NOT NULL,
-    slug            TEXT        UNIQUE,               -- reserved for future human-readable URLs
-    schedule        TEXT        NOT NULL,             -- cron expression, validated on write
-    grace           INTEGER     NOT NULL DEFAULT 10,  -- minutes; minimum 1
-    status          TEXT        NOT NULL DEFAULT 'new'
-                                CHECK(status IN ('new','up','down','paused')),
-    last_ping_at    DATETIME,                         -- last successful/fail/start ping
-    next_expected_at DATETIME,                        -- deadline: schedule + grace, updated each ping
-    created_at      DATETIME    NOT NULL,
-    updated_at      DATETIME    NOT NULL,
-    tags            TEXT        NOT NULL DEFAULT '',   -- comma-separated, empty string not NULL
-    notify_on_fail  INTEGER     NOT NULL DEFAULT 0    -- boolean (0/1); opt-in: fire an AlertFail on each /fail ping
+    id               TEXT        PRIMARY KEY,          -- UUIDv4
+    name             TEXT        NOT NULL,
+    slug             TEXT        UNIQUE,               -- reserved for future human-readable URLs
+    schedule         TEXT        NOT NULL,             -- cron expression, validated on write
+    grace            INTEGER     NOT NULL DEFAULT 10,  -- minutes; minimum 1
+    status           TEXT        NOT NULL DEFAULT 'new'
+                                 CHECK(status IN ('new','up','down','paused')),
+    pre_pause_status TEXT,                             -- status saved before pausing; restored on unpause; NULL if never paused
+    last_ping_at     DATETIME,                         -- last successful/fail/start ping
+    next_expected_at DATETIME,                         -- deadline: schedule + grace, updated each ping
+    created_at       DATETIME    NOT NULL,
+    updated_at       DATETIME    NOT NULL,
+    tags             TEXT        NOT NULL DEFAULT '',   -- comma-separated, empty string not NULL
+    notify_on_fail   INTEGER     NOT NULL DEFAULT 0    -- boolean (0/1); opt-in: fire an AlertFail on each /fail ping
 );
 
 CREATE TABLE pings (
@@ -247,7 +248,7 @@ CREATE TABLE notifications (
     id          INTEGER     PRIMARY KEY AUTOINCREMENT,
     check_id    TEXT        NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
     channel_id  INTEGER              REFERENCES channels(id) ON DELETE SET NULL,  -- NULL = channel deleted; record preserved for audit
-    type        TEXT        NOT NULL CHECK(type IN ('down','up')),
+    type        TEXT        NOT NULL CHECK(type IN ('down','up','fail')),
     sent_at     DATETIME    NOT NULL,
     error       TEXT                                  -- NULL means delivered successfully
 );
@@ -453,10 +454,10 @@ db.Close()
 | `down` | `up` | Success or fail ping received | Yes — **recovery** alert |
 | `up` | `up` | `/fail` ping received, `notify_on_fail = true` | Yes — **fail** alert (status unchanged) |
 | `new` or `down` | *(no change)* | `/start` ping received | No — status unchanged; only extends `next_expected_at` |
-| `up` | `paused` | Manual pause (dashboard/API) | No |
-| `down` | `paused` | Manual pause | No |
-| `paused` | `up` | Manual unpause; ping received while paused | No |
-| `new` | `paused` | Manual pause | No |
+| `up` | `paused` | Manual pause (dashboard/API) | No — `pre_pause_status` set to `up` |
+| `down` | `paused` | Manual pause | No — `pre_pause_status` set to `down` |
+| `new` | `paused` | Manual pause | No — `pre_pause_status` set to `new` |
+| `paused` | *pre-pause status* | Manual unpause | No — status restored from `pre_pause_status` (defaults to `new` if NULL) |
 
 ### Startup Reconciliation
 
@@ -554,9 +555,11 @@ NotifierWorker (goroutine)
 | Threat | Mitigated By |
 |--------|-------------|
 | Unauthorized dashboard access | HTTP Basic Auth on all non-ping routes |
+| Basic Auth timing oracle (credential length leak) | Submitted and expected credentials are SHA-256 hashed before `ConstantTimeCompare`, ensuring comparisons always operate on equal 32-byte inputs |
 | Ping endpoint enumeration | UUIDs are 128-bit; 200 response for unknown UUIDs (no oracle) |
 | SQL injection | Parameterized queries everywhere; ORM-free but `database/sql` placeholders |
 | Channel config tampering | Config validated server-side on write; JSON schema per channel type |
+| `_method` override abuse | Only `PUT`, `PATCH`, and `DELETE` are accepted in the `_method` field; any other value is silently ignored, preventing rewriting to dangerous methods such as `TRACE` or `CONNECT` |
 | SSRF via webhook URL | Webhook URL resolved and the resulting IP checked against RFC 1918 / loopback ranges **at call time** (not just at save time) to prevent DNS rebinding attacks |
 | Credential exposure in logs | `SMTP_PASS`, `ADMIN_PASS` never logged; config struct masks sensitive fields in `String()` |
 | `X-Forwarded-For` spoofing | By default, `source_ip` is taken from `RemoteAddr`. `TRUSTED_PROXY=true` opt-in to read `X-Forwarded-For` — disabled unless explicitly configured. |
@@ -567,11 +570,15 @@ NotifierWorker (goroutine)
 
 ```go
 func BasicAuth(username, password string) func(http.Handler) http.Handler {
-    // uses subtle.ConstantTimeCompare to prevent timing attacks
+    // Both submitted and expected credentials are SHA-256 hashed before
+    // subtle.ConstantTimeCompare, ensuring equal-length inputs and
+    // eliminating the length-based timing oracle present in raw-string comparison.
+    // Both fields are always compared regardless of username match.
 }
 ```
 
 - Applied to all routes except `/ping/{uuid}[/*]`.
+- SHA-256 pre-hashing eliminates the length-based timing side-channel in `subtle.ConstantTimeCompare` (which short-circuits on length mismatch when given raw strings).
 - Session tokens are intentionally out of scope for v1 (stateless basic auth per request).
 - `ADMIN_PASS` must be set at startup; missing value is a fatal startup error.
 
