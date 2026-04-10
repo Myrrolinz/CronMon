@@ -2,7 +2,7 @@ package handler_test
 
 // Unit tests for CheckHandler using a mock CheckRepository so no database
 // is needed. Tests cover CRUD operations, validation, redirect behaviour,
-// pause toggling, and the auth middleware.
+// and pause toggling.
 
 import (
 	"context"
@@ -352,15 +352,16 @@ func TestCheckHandler_Pause_UpTosPaused(t *testing.T) {
 func TestCheckHandler_Pause_PausedToUp(t *testing.T) {
 	const id = "aaaaaaaa-0000-0000-0000-000000000007"
 	now := time.Now().UTC()
+	prePause := model.StatusUp
 	sc, repo := makeCheckCache(t, model.Check{
-		ID:         id,
-		Name:       "Job",
-		Schedule:   "0 2 * * *",
-		Grace:      10,
-		Status:     model.StatusPaused,
-		LastPingAt: &now, // has received a ping
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:             id,
+		Name:           "Job",
+		Schedule:       "0 2 * * *",
+		Grace:          10,
+		Status:         model.StatusPaused,
+		PrePauseStatus: &prePause, // was "up" before being paused
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	})
 	h := handler.NewCheckHandler(sc)
 
@@ -372,6 +373,9 @@ func TestCheckHandler_Pause_PausedToUp(t *testing.T) {
 	c := repo.get(id)
 	if c.Status != model.StatusUp {
 		t.Errorf("Status: got %q want %q", c.Status, model.StatusUp)
+	}
+	if c.PrePauseStatus != nil {
+		t.Errorf("PrePauseStatus: expected nil after unpause, got %q", *c.PrePauseStatus)
 	}
 }
 
@@ -424,6 +428,44 @@ func TestCheckHandler_Pause_DownToPaused(t *testing.T) {
 	c := repo.get(id)
 	if c.Status != model.StatusPaused {
 		t.Errorf("Status: got %q want %q", c.Status, model.StatusPaused)
+	}
+	if c.PrePauseStatus == nil || *c.PrePauseStatus != model.StatusDown {
+		t.Errorf("PrePauseStatus: expected %q, got %v", model.StatusDown, c.PrePauseStatus)
+	}
+}
+
+// TestCheckHandler_Pause_DownPausedUnpauseRestoresDown verifies that a check
+// that was "down" before being paused returns to "down" on unpause, not "up".
+// This guards against the bug where unpausing would incorrectly show a down
+// check as up, hiding an ongoing outage.
+func TestCheckHandler_Pause_DownPausedUnpauseRestoresDown(t *testing.T) {
+	const id = "aaaaaaaa-0000-0000-0000-00000000000a"
+	now := time.Now().UTC()
+	prePause := model.StatusDown
+	sc, repo := makeCheckCache(t, model.Check{
+		ID:             id,
+		Name:           "Job",
+		Schedule:       "0 2 * * *",
+		Grace:          10,
+		Status:         model.StatusPaused,
+		PrePauseStatus: &prePause,
+		LastPingAt:     &now,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+	h := handler.NewCheckHandler(sc)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /checks/{id}/pause", h.HandlePause)
+
+	postForm(t, mux, "/checks/"+id+"/pause", url.Values{})
+
+	c := repo.get(id)
+	if c.Status != model.StatusDown {
+		t.Errorf("Status: got %q want %q (pre-pause state must be preserved)", c.Status, model.StatusDown)
+	}
+	if c.PrePauseStatus != nil {
+		t.Errorf("PrePauseStatus: expected nil after unpause, got %q", *c.PrePauseStatus)
 	}
 }
 

@@ -53,8 +53,9 @@ type Check struct {
 	Schedule       string     `json:"schedule"`       // 5-field cron expression
 	Grace          int        `json:"grace"`          // grace period in minutes; minimum 1
 	Status         Status     `json:"status"`
-	LastPingAt     *time.Time `json:"last_ping_at"`     // nil until first ping
-	NextExpectedAt *time.Time `json:"next_expected_at"` // nil until first ping or creation
+	PrePauseStatus *Status    `json:"pre_pause_status,omitempty"` // status saved before pausing; restored on unpause
+	LastPingAt     *time.Time `json:"last_ping_at"`               // nil until first ping
+	NextExpectedAt *time.Time `json:"next_expected_at"`           // nil until first ping or creation
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	Tags           string     `json:"tags"`           // comma-separated; empty string when none

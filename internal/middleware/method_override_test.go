@@ -66,3 +66,23 @@ func TestMethodOverride_NoFieldPassesThrough(t *testing.T) {
 		t.Errorf("expected method POST, got %q", captured)
 	}
 }
+
+func TestMethodOverride_NonWhitelistedMethodIgnored(t *testing.T) {
+	var captured string
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		captured = r.Method
+	})
+
+	h := middleware.MethodOverride(inner)
+
+	body := strings.NewReader("_method=TRACE")
+	req := httptest.NewRequest(http.MethodPost, "/checks", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if captured != http.MethodPost {
+		t.Errorf("expected method POST (non-whitelisted _method ignored), got %q", captured)
+	}
+}

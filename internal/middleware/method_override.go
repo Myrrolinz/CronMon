@@ -14,6 +14,10 @@ const maxMethodOverrideBytes = 1024
 // This enables HTML forms — which only support GET and POST — to simulate
 // PUT, PATCH, and DELETE.
 //
+// Only PUT, PATCH, and DELETE are accepted; any other value in _method is
+// silently ignored to prevent rewriting to unexpected methods such as TRACE
+// or CONNECT.
+//
 // Apply this middleware only to auth-protected routes. Never apply it to
 // /ping/* endpoints which must not have their request method rewritten.
 func MethodOverride(next http.Handler) http.Handler {
@@ -21,7 +25,10 @@ func MethodOverride(next http.Handler) http.Handler {
 		if r.Method == http.MethodPost {
 			r.Body = http.MaxBytesReader(w, r.Body, maxMethodOverrideBytes)
 			if method := r.FormValue("_method"); method != "" {
-				r.Method = strings.ToUpper(method)
+				switch method = strings.ToUpper(method); method {
+				case http.MethodPut, http.MethodPatch, http.MethodDelete:
+					r.Method = method
+				}
 			}
 		}
 		next.ServeHTTP(w, r)

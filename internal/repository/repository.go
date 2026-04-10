@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/myrrolinz/cronmon/internal/model"
 )
 
 // ErrNotFound is returned when a requested record does not exist.
@@ -63,4 +65,13 @@ func stringPtrToNull(s *string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: *s, Valid: true}
+}
+
+// statusPtrToNull converts a *model.Status to a sql.NullString for the
+// nullable pre_pause_status column. A nil pointer produces a NULL value.
+func statusPtrToNull(s *model.Status) sql.NullString {
+	if s == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(*s), Valid: true}
 }

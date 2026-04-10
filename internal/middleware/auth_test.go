@@ -74,7 +74,7 @@ func TestBasicAuth_NoCredentials(t *testing.T) {
 
 // TestBasicAuth_TimingSafe verifies that the handler takes roughly the same
 // time regardless of whether the username matches.  We measure 1000 trials
-// for each path and assert that the medians do not differ by more than 5×.
+// for each path and assert that the averages do not differ by more than 10×.
 // This is a smoke test — it catches a naive early-exit "if username != …
 // return 401" rather than a rigorous timing proof.
 func TestBasicAuth_TimingSafe(t *testing.T) {

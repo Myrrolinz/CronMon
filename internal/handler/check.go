@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/myrrolinz/cronmon/internal/cache"
 	"github.com/myrrolinz/cronmon/internal/model"
+	"github.com/myrrolinz/cronmon/internal/repository"
 	"github.com/myrrolinz/cronmon/internal/schedule"
 )
 
@@ -127,6 +129,11 @@ func (h *CheckHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	if err := h.cache.Delete(r.Context(), id); err != nil {
+		// Treat a missing check as success — delete is idempotent.
+		if errors.Is(err, repository.ErrNotFound) {
+			http.Redirect(w, r, "/checks", http.StatusSeeOther)
+			return
+		}
 		slog.Error("check: failed to delete", "check_id", logSafe(id), "err", err) //nolint:gosec
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -136,9 +143,9 @@ func (h *CheckHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandlePause handles POST /checks/{id}/pause.
-// Toggles the check status between "paused" and its effective pre-pause state:
-//   - Unpausing a check that has received at least one ping → "up"
-//   - Unpausing a check that has never received a ping      → "new"
+// Toggles the check status between "paused" and its pre-pause state:
+//   - Pausing: saves the current status to PrePauseStatus, sets status to "paused".
+//   - Unpausing: restores from PrePauseStatus (defaults to "new" if nil).
 func (h *CheckHandler) HandlePause(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -151,13 +158,16 @@ func (h *CheckHandler) HandlePause(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 
 	if check.Status == model.StatusPaused {
-		// Restore to the logical pre-pause state.
-		if check.LastPingAt != nil {
-			check.Status = model.StatusUp
+		// Restore the pre-pause status; default to "new" if it was never set.
+		if check.PrePauseStatus != nil {
+			check.Status = *check.PrePauseStatus
 		} else {
 			check.Status = model.StatusNew
 		}
+		check.PrePauseStatus = nil
 	} else {
+		saved := check.Status
+		check.PrePauseStatus = &saved
 		check.Status = model.StatusPaused
 	}
 	check.UpdatedAt = now

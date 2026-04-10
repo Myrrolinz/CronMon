@@ -33,6 +33,10 @@ func cloneCheck(c *model.Check) *model.Check {
 		s := *c.Slug
 		cp.Slug = &s
 	}
+	if c.PrePauseStatus != nil {
+		s := *c.PrePauseStatus
+		cp.PrePauseStatus = &s
+	}
 	if c.LastPingAt != nil {
 		t := *c.LastPingAt
 		cp.LastPingAt = &t
