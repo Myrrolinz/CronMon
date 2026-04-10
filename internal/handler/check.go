@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/myrrolinz/cronmon/internal/cache"
 	"github.com/myrrolinz/cronmon/internal/model"
 	"github.com/myrrolinz/cronmon/internal/schedule"
@@ -32,11 +33,6 @@ func NewCheckHandler(sc *cache.StateCache) *CheckHandler {
 // Validates the submitted form, creates a new Check with a fresh UUIDv4, and
 // redirects to the check detail page.
 func (h *CheckHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
 	name, scheduleExpr, grace, tags, notifyOnFail, ok := parseCheckForm(w, r)
 	if !ok {
 		return
@@ -84,11 +80,6 @@ func (h *CheckHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	check := h.cache.Get(id)
 	if check == nil {
 		http.NotFound(w, r)
-		return
-	}
-
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
@@ -180,10 +171,16 @@ func (h *CheckHandler) HandlePause(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/checks/"+id, http.StatusSeeOther)
 }
 
+// maxFormBytes is the maximum number of bytes accepted from a form submission.
+// 32 KiB is far larger than any valid check form; this cap prevents memory
+// exhaustion from oversized request bodies (gosec G120).
+const maxFormBytes = 32 * 1024
+
 // parseCheckForm extracts and validates the shared form fields used by both
 // create and update. It writes an appropriate error response and returns
 // ok=false when validation fails so the caller can return immediately.
 func parseCheckForm(w http.ResponseWriter, r *http.Request) (name, scheduleExpr string, grace int, tags string, notifyOnFail bool, ok bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	name = r.FormValue("name")
 	scheduleExpr = r.FormValue("schedule")
 	graceStr := r.FormValue("grace")

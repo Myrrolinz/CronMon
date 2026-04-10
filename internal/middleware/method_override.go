@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// maxMethodOverrideBytes is the upper bound for body reads when scanning for
+// the _method field. This prevents memory exhaustion (gosec G120).
+const maxMethodOverrideBytes = 1024
+
 // MethodOverride returns HTTP middleware that reads a hidden "_method" form
 // field on POST requests and replaces r.Method with its upper-cased value.
 // This enables HTML forms — which only support GET and POST — to simulate
@@ -15,6 +19,7 @@ import (
 func MethodOverride(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
+			r.Body = http.MaxBytesReader(w, r.Body, maxMethodOverrideBytes)
 			if method := r.FormValue("_method"); method != "" {
 				r.Method = strings.ToUpper(method)
 			}
