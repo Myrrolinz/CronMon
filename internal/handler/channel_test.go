@@ -100,6 +100,9 @@ func (f *fakeChannelRepo) ListByCheckID(_ context.Context, checkID string) ([]*m
 func (f *fakeChannelRepo) AttachToCheck(_ context.Context, checkID string, channelID int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if _, ok := f.channels[channelID]; !ok {
+		return fmt.Errorf("fakeChannelRepo.AttachToCheck %d: %w", channelID, repository.ErrNotFound)
+	}
 	if f.attached[checkID] == nil {
 		f.attached[checkID] = make(map[int64]bool)
 	}
@@ -470,6 +473,29 @@ func TestChannelHandler_HandleAttachDetach(t *testing.T) {
 
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+		}
+	})
+
+	t.Run("stale or fabricated numeric channel ID is silently ignored", func(t *testing.T) {
+		h, repo := makeChannelHandlerWithChecks(t, seedCheck)
+		// No channel seeded — ID 999 doesn't exist.
+
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /checks/{id}/channels", h.HandleAttachDetach)
+
+		rec := postForm(t, mux, "/checks/"+checkID+"/channels", url.Values{
+			"channel_ids": {"999"},
+		})
+
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusSeeOther, rec.Body.String())
+		}
+		attached, err := repo.ListByCheckID(context.Background(), checkID)
+		if err != nil {
+			t.Fatalf("ListByCheckID: %v", err)
+		}
+		if len(attached) != 0 {
+			t.Errorf("attached count = %d, want 0 (stale ID should be silently dropped)", len(attached))
 		}
 	})
 

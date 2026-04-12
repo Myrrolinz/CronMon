@@ -59,6 +59,10 @@ func (h *ChannelHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 // redirects to /channels.
 func (h *ChannelHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 
 	channelType := r.FormValue("type")
 	name := r.FormValue("name")
@@ -136,6 +140,15 @@ func (h *ChannelHandler) HandleAttachDetach(w http.ResponseWriter, r *http.Reque
 	for _, s := range r.Form["channel_ids"] {
 		if id, err := strconv.ParseInt(s, 10, 64); err == nil {
 			desired[id] = true
+		}
+	}
+
+	// Validate desired IDs against known channels to prevent FK failures on
+	// stale or fabricated IDs submitted in the form. Unknown IDs are silently
+	// dropped; the FK constraint in SQLite remains the final safety net.
+	for id := range desired {
+		if _, err := h.channelRepo.GetByID(r.Context(), id); err != nil {
+			delete(desired, id)
 		}
 	}
 
@@ -243,15 +256,24 @@ func validateWebhookConfig(configJSON string) error {
 		return fmt.Errorf("webhook config: url is required")
 	}
 	u, err := url.Parse(cfg.URL)
-	if err != nil || u.Host == "" {
+	if err != nil {
 		return fmt.Errorf("webhook config: url is not valid")
+	}
+	hostname := u.Hostname()
+	if u.Host == "" || hostname == "" {
+		return fmt.Errorf("webhook config: url is not valid")
+	}
+	if port := u.Port(); port != "" {
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return fmt.Errorf("webhook config: url is not valid")
+		}
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("webhook config: url scheme must be http or https")
 	}
 	// Fast-fail: reject URLs with literal private/loopback IP addresses.
 	// Hostname-based targets are validated at send time via DNS resolution.
-	if ip := net.ParseIP(u.Hostname()); ip != nil && isPrivateIP(ip) {
+	if ip := net.ParseIP(hostname); ip != nil && isPrivateIP(ip) {
 		return fmt.Errorf("webhook config: url must not target a private IP address")
 	}
 	return nil
