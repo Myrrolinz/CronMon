@@ -142,7 +142,7 @@ func (h *ChannelHandler) HandleAttachDetach(w http.ResponseWriter, r *http.Reque
 	// Fetch currently attached channels to compute the diff.
 	current, err := h.channelRepo.ListByCheckID(r.Context(), checkID)
 	if err != nil {
-		slog.Error("channel: failed to list channels for check",
+		slog.Error("channel: failed to list channels for check", //nolint:gosec // G706: value sanitised by logSafe
 			"check_id", logSafe(checkID), "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -152,7 +152,7 @@ func (h *ChannelHandler) HandleAttachDetach(w http.ResponseWriter, r *http.Reque
 	for _, ch := range current {
 		if !desired[ch.ID] {
 			if err := h.channelRepo.DetachFromCheck(r.Context(), checkID, ch.ID); err != nil {
-				slog.Error("channel: failed to detach from check",
+				slog.Error("channel: failed to detach from check", //nolint:gosec // G706: value sanitised by logSafe
 					"check_id", logSafe(checkID), "channel_id", ch.ID, "err", err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
@@ -163,7 +163,7 @@ func (h *ChannelHandler) HandleAttachDetach(w http.ResponseWriter, r *http.Reque
 	// Attach all desired channels (idempotent via INSERT OR IGNORE in the repo).
 	for chID := range desired {
 		if err := h.channelRepo.AttachToCheck(r.Context(), checkID, chID); err != nil {
-			slog.Error("channel: failed to attach to check",
+			slog.Error("channel: failed to attach to check", //nolint:gosec // G706: value sanitised by logSafe
 				"check_id", logSafe(checkID), "channel_id", chID, "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
