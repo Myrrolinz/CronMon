@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/myrrolinz/cronmon/internal/model"
@@ -107,11 +108,22 @@ func (n *SlackNotifier) Send(ctx context.Context, event model.AlertEvent) error 
 	if err != nil {
 		return fmt.Errorf("slackNotifier.Send: do request: %w", err)
 	}
-	defer resp.Body.Close()               //nolint:errcheck
-	_, _ = io.Copy(io.Discard, resp.Body) // drain so the connection can be reused
+	defer resp.Body.Close() //nolint:errcheck
+
+	// Read a bounded response body.  Slack returns the string "ok" for
+	// successful deliveries and a descriptive error string (e.g.
+	// "invalid_payload") for failures — always with HTTP 200.  Reading up to
+	// 512 bytes is enough to capture any known Slack error token.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if err != nil {
+		return fmt.Errorf("slackNotifier.Send: read response body: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("slackNotifier.Send: unexpected status %d from Slack webhook", resp.StatusCode)
+	}
+	if strings.TrimSpace(string(raw)) != "ok" {
+		return fmt.Errorf("slackNotifier.Send: Slack webhook returned %q (want \"ok\")", strings.TrimSpace(string(raw)))
 	}
 
 	return nil

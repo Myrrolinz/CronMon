@@ -23,8 +23,10 @@ func defaultResolve(host string) ([]string, error) {
 // makeSSRFSafeDialContext returns a DialContext function that:
 //  1. Resolves the target hostname using the supplied resolve function.
 //  2. Rejects the connection if any resolved IP is in a private/reserved range.
-//  3. Connects directly to the first validated IP — bypassing a second DNS
-//     lookup at dial time — to prevent TOCTOU DNS-rebinding attacks.
+//  3. Connects directly to each validated IP in order — bypassing a second DNS
+//     lookup at dial time — to prevent TOCTOU DNS-rebinding attacks.  The
+//     loop handles multi-IP DNS responses (e.g. dual-stack A + AAAA records)
+//     gracefully: if the first IP is unreachable the dialer tries the next.
 func makeSSRFSafeDialContext(resolve resolveFunc) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
@@ -42,7 +44,9 @@ func makeSSRFSafeDialContext(resolve resolveFunc) func(ctx context.Context, netw
 			return nil, fmt.Errorf("ssrf: no addresses for %q", host)
 		}
 
-		// Reject if any resolved address is in a private/reserved range.
+		// Reject if ANY resolved address is in a private/reserved range.
+		// Checking all IPs before dialing prevents a mixed A/AAAA response
+		// from being used to smuggle a private address through validation.
 		for _, ipStr := range ips {
 			ip := net.ParseIP(ipStr)
 			if ip == nil {
@@ -53,11 +57,23 @@ func makeSSRFSafeDialContext(resolve resolveFunc) func(ctx context.Context, netw
 			}
 		}
 
-		// Connect directly to the first validated IP.  Bypassing DNS for the
-		// actual dial prevents a rebinding attack where the DNS response changes
-		// between our check and the OS-level connect syscall.
+		// All resolved IPs are safe.  Try each in order; return on the first
+		// successful dial.  Bypassing DNS at dial time prevents a rebinding
+		// attack where the DNS response changes between our check and the
+		// OS-level connect syscall.
 		d := &net.Dialer{}
-		return d.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
+		var lastErr error
+		for _, ipStr := range ips {
+			if ctx.Err() != nil {
+				break // context already cancelled; no point trying further
+			}
+			conn, dialErr := d.DialContext(ctx, network, net.JoinHostPort(ipStr, port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, fmt.Errorf("ssrf: dial %q: %w", host, lastErr)
 	}
 }
 

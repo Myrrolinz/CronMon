@@ -372,29 +372,50 @@ func TestSlackNotifier_SSRF_RejectsPrivateIP(t *testing.T) {
 	}
 }
 
-// TestSlackNotifier_SSRF_AllowsPublicIP verifies that Send proceeds normally
-// when the resolver returns a public IP (the actual connection goes to the
-// test server via WithHTTPClient which bypasses SSRF at dial time).
+// TestSlackNotifier_SSRF_AllowsPublicIP verifies that a public IP is not
+// rejected by SSRF validation.  The request will fail for an ordinary network
+// reason (unreachable host), but the error must NOT be an SSRF rejection.
 func TestSlackNotifier_SSRF_AllowsPublicIP(t *testing.T) {
-	cs := newCaptureServer(t, http.StatusOK, "ok")
+	t.Parallel()
 
-	// Resolver returns a public IP to satisfy the SSRF pre-check.
-	// WithHTTPClient then takes over for the actual TCP connection.
 	publicResolver := func(host string) ([]string, error) {
 		return []string{"1.2.3.4"}, nil
 	}
 
-	// We need both: SSRF pre-check uses our public resolver, actual TCP
-	// connection uses the plain client to reach the test server.
-	// Build a notifier with the public resolver for SSRF, then also override
-	// the client so the TCP dial goes to the test server.
-	n := notify.NewSlackNotifier().
-		WithResolver(publicResolver).
-		WithHTTPClient(plainClient(5 * time.Second))
+	// Use only WithResolver — no WithHTTPClient — so the SSRF-safe transport
+	// is active for the actual dial attempt.
+	n := notify.NewSlackNotifier().WithResolver(publicResolver)
 
-	err := n.Send(context.Background(), makeSlackEvent(model.AlertDown, cs.ts.URL))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	err := n.Send(ctx, makeSlackEvent(model.AlertDown, "http://public.example/webhook"))
+	if err == nil {
+		t.Fatal("expected network error for unreachable public IP, got nil")
+	}
+	if strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("expected non-SSRF network error for public IP, got %q", err.Error())
+	}
+}
+
+// TestSlackNotifier_200WithNonOkBody verifies that a 200 response whose body
+// is not "ok" is returned as an error.  Slack uses this pattern to signal
+// errors such as invalid_payload even when the HTTP status is 200.
+func TestSlackNotifier_200WithNonOkBody(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{"invalid_payload", "no_service", "", "   ", "OK", "Ok"}
+	for _, body := range cases {
+		body := body
+		t.Run(fmt.Sprintf("body=%q", body), func(t *testing.T) {
+			cs := newCaptureServer(t, http.StatusOK, body)
+			n := notify.NewSlackNotifier().WithHTTPClient(plainClient(5 * time.Second))
+
+			err := n.Send(context.Background(), makeSlackEvent(model.AlertDown, cs.ts.URL))
+			if err == nil {
+				t.Errorf("body=%q: expected error for non-ok body, got nil", body)
+			}
+		})
 	}
 }
 
