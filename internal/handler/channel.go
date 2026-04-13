@@ -15,6 +15,7 @@ import (
 
 	"github.com/myrrolinz/cronmon/internal/cache"
 	"github.com/myrrolinz/cronmon/internal/model"
+	"github.com/myrrolinz/cronmon/internal/netutil"
 	"github.com/myrrolinz/cronmon/internal/repository"
 )
 
@@ -273,40 +274,8 @@ func validateWebhookConfig(configJSON string) error {
 	}
 	// Fast-fail: reject URLs with literal private/loopback IP addresses.
 	// Hostname-based targets are validated at send time via DNS resolution.
-	if ip := net.ParseIP(hostname); ip != nil && isPrivateIP(ip) {
+	if ip := net.ParseIP(hostname); ip != nil && netutil.IsPrivateIP(ip) {
 		return fmt.Errorf("webhook config: url must not target a private IP address")
 	}
 	return nil
-}
-
-// privateIPRanges holds all CIDR blocks considered private, loopback, or
-// link-local. Initialised once at package load time.
-var privateIPRanges = func() []*net.IPNet {
-	cidrs := []string{
-		"10.0.0.0/8",     // RFC 1918
-		"172.16.0.0/12",  // RFC 1918
-		"192.168.0.0/16", // RFC 1918
-		"127.0.0.0/8",    // IPv4 loopback
-		"::1/128",        // IPv6 loopback
-		"169.254.0.0/16", // IPv4 link-local
-		"fe80::/10",      // IPv6 link-local
-		"fc00::/7",       // IPv6 unique-local (RFC 4193)
-	}
-	nets := make([]*net.IPNet, 0, len(cidrs))
-	for _, cidr := range cidrs {
-		_, network, _ := net.ParseCIDR(cidr)
-		nets = append(nets, network)
-	}
-	return nets
-}()
-
-// isPrivateIP reports whether ip falls within any private, loopback, or
-// link-local range.
-func isPrivateIP(ip net.IP) bool {
-	for _, rang := range privateIPRanges {
-		if rang.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }
