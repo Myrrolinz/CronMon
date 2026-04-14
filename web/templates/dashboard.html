@@ -1,0 +1,103 @@
+{{define "title"}}Checks{{end}}
+
+{{define "content"}}
+<div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:1rem">
+  <h2 style="margin:0">Checks</h2>
+  <a href="#create-check-form" role="button" class="outline" style="font-size:0.9rem">+ New Check</a>
+</div>
+
+{{/* Tag filter bar */}}
+{{if .AllTags}}
+<div style="margin-bottom:1rem">
+  <a href="/checks" style="margin-right:0.5rem; font-size:0.85rem" {{if eq .Tag ""}}aria-current="true"{{end}}>All</a>
+  {{range .AllTags}}
+  <a href="/checks?tag={{.}}" style="margin-right:0.5rem; font-size:0.85rem" {{if eq . $.Tag}}aria-current="true"{{end}}>{{.}}</a>
+  {{end}}
+</div>
+{{end}}
+
+{{/* Checks table */}}
+{{if .Checks}}
+<figure>
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Status</th>
+      <th>Schedule</th>
+      <th>Last Ping</th>
+      <th>Next Expected</th>
+      <th>Ping URL</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Checks}}
+    <tr>
+      <td><a href="/checks/{{.ID}}"><strong>{{.Name}}</strong></a>
+        {{range .TagList}}<span class="tag-badge">{{.}}</span>{{end}}
+      </td>
+      <td><span class="status-badge status-{{.Status}}">{{.Status}}</span></td>
+      <td><code>{{.Schedule}}</code></td>
+      <td>{{timeAgo .LastPingAt}}</td>
+      <td>{{timeAgo .NextExpectedAt}}</td>
+      <td>
+        <span class="ping-url-row">
+          <code>{{.PingURL}}</code>
+          <button class="copy-btn outline" style="padding:0.2em 0.6em; font-size:0.75rem"
+            data-copy="{{.PingURL}}" onclick="copyToClipboard(this)">Copy</button>
+        </span>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+</figure>
+{{else}}
+<p>No checks yet. Create your first check below.</p>
+{{end}}
+
+<hr>
+
+{{/* Create check form */}}
+<section id="create-check-form">
+  <h3>New Check</h3>
+  <form method="POST" action="/checks">
+    <div class="grid">
+      <label>Name
+        <input type="text" name="name" placeholder="Daily database backup" required>
+      </label>
+      <label>Schedule (cron)
+        <input type="text" name="schedule" placeholder="0 2 * * *" required>
+      </label>
+    </div>
+    <div class="grid">
+      <label>Grace Period (minutes)
+        <input type="number" name="grace" value="10" min="1" required>
+      </label>
+      <label>Tags (comma-separated)
+        <input type="text" name="tags" placeholder="backup,production">
+      </label>
+    </div>
+    <label>
+      <input type="checkbox" name="notify_on_fail">
+      Alert on explicit /fail pings (notify_on_fail)
+    </label>
+    <button type="submit">Create Check</button>
+  </form>
+</section>
+{{end}}
+
+{{define "scripts"}}
+<script>
+function copyToClipboard(btn) {
+  var text = btn.getAttribute('data-copy');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function() {
+      var orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(function(){ btn.textContent = orig; }, 1500);
+    });
+  }
+}
+</script>
+{{end}}

@@ -1,0 +1,107 @@
+{{define "title"}}Channels{{end}}
+
+{{define "content"}}
+<div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:1rem">
+  <h2 style="margin:0">Notification Channels</h2>
+  <a href="#create-channel-form" role="button" class="outline" style="font-size:0.9rem">+ New Channel</a>
+</div>
+
+{{if .Channels}}
+<figure>
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Type</th>
+      <th>Created</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Channels}}
+    <tr>
+      <td><strong>{{.Name}}</strong></td>
+      <td><span class="channel-badge">{{.Type}}</span></td>
+      <td style="font-size:0.85rem">{{formatTime .CreatedAt}}</td>
+      <td>
+        <form method="POST" action="/channels/{{.ID}}/delete" style="margin:0"
+              onsubmit="return confirm('Delete channel {{.Name}}?')">
+          <button type="submit" class="outline" style="padding:0.2em 0.75em; font-size:0.8rem">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+</figure>
+{{else}}
+<p>No channels yet. Create one below to receive alerts.</p>
+{{end}}
+
+<hr>
+
+<section id="create-channel-form">
+  <h3>New Channel</h3>
+  <form method="POST" action="/channels" id="channel-form">
+    <div class="grid">
+      <label>Name
+        <input type="text" name="name" placeholder="My Slack alerts" required>
+      </label>
+      <label>Type
+        <select name="type" id="channel-type" onchange="updateChannelForm()">
+          <option value="email">Email</option>
+          <option value="slack">Slack Webhook</option>
+          <option value="webhook">Generic Webhook</option>
+        </select>
+      </label>
+    </div>
+
+    <div id="config-email">
+      <label>Email Address
+        <input type="text" name="_email_address" placeholder="alerts@example.com">
+      </label>
+    </div>
+
+    <div id="config-slack" style="display:none">
+      <label>Slack Webhook URL
+        <input type="text" name="_slack_url" placeholder="https://hooks.slack.com/services/...">
+      </label>
+    </div>
+
+    <div id="config-webhook" style="display:none">
+      <label>Webhook URL
+        <input type="text" name="_webhook_url" placeholder="https://example.com/webhook">
+      </label>
+    </div>
+
+    {{/* Hidden config field built by JS before submit */}}
+    <input type="hidden" name="config" id="channel-config">
+
+    <button type="submit">Create Channel</button>
+  </form>
+</section>
+{{end}}
+
+{{define "scripts"}}
+<script>
+function updateChannelForm() {
+  var type = document.getElementById('channel-type').value;
+  document.getElementById('config-email').style.display   = type === 'email'   ? '' : 'none';
+  document.getElementById('config-slack').style.display   = type === 'slack'   ? '' : 'none';
+  document.getElementById('config-webhook').style.display = type === 'webhook' ? '' : 'none';
+}
+
+document.getElementById('channel-form').addEventListener('submit', function(e) {
+  var type = document.getElementById('channel-type').value;
+  var config = {};
+  if (type === 'email') {
+    config.address = document.querySelector('[name="_email_address"]').value;
+  } else if (type === 'slack') {
+    config.url = document.querySelector('[name="_slack_url"]').value;
+  } else if (type === 'webhook') {
+    config.url = document.querySelector('[name="_webhook_url"]').value;
+  }
+  document.getElementById('channel-config').value = JSON.stringify(config);
+});
+</script>
+{{end}}
