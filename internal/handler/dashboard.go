@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -129,6 +130,18 @@ func NewDashboardHandler(
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
+
+// StaticHandler returns an http.Handler that serves the embedded static assets
+// (CSS, JS, images) under the /static/ prefix. Register it as:
+//
+//	mux.Handle("/static/", h.StaticHandler())
+func (h *DashboardHandler) StaticHandler() http.Handler {
+	sub, err := fs.Sub(web.FS, "static")
+	if err != nil {
+		panic("dashboard: failed to create sub-FS for static assets: " + err.Error())
+	}
+	return http.StripPrefix("/static/", http.FileServerFS(sub))
+}
 
 // HandleIndex handles GET /: redirects to /checks.
 func (h *DashboardHandler) HandleIndex(w http.ResponseWriter, r *http.Request) {
@@ -285,8 +298,8 @@ func (h *DashboardHandler) pingURL(id string) string {
 
 // buildPingSquares pads the most recent N pings to a fixed grid of 30 cells.
 // Pings are assumed to be ordered newest-first (as returned by the repo).
-// The grid is presented oldest-to-newest (left to right) so we reverse the
-// slice after building it.
+// The grid is presented oldest-to-newest (left to right), so we place newer
+// pings into the slice from the end toward the beginning as we build it.
 func buildPingSquares(pings []*model.Ping) []PingSquare {
 	const gridSize = 30
 	squares := make([]PingSquare, gridSize)

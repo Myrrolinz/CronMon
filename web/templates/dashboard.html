@@ -11,7 +11,7 @@
 <div style="margin-bottom:1rem">
   <a href="/checks" style="margin-right:0.5rem; font-size:0.85rem" {{if eq .Tag ""}}aria-current="true"{{end}}>All</a>
   {{range .AllTags}}
-  <a href="/checks?tag={{.}}" style="margin-right:0.5rem; font-size:0.85rem" {{if eq . $.Tag}}aria-current="true"{{end}}>{{.}}</a>
+  <a href="/checks?tag={{urlquery .}}" style="margin-right:0.5rem; font-size:0.85rem" {{if eq . $.Tag}}aria-current="true"{{end}}>{{.}}</a>
   {{end}}
 </div>
 {{end}}
@@ -87,17 +87,4 @@
 </section>
 {{end}}
 
-{{define "scripts"}}
-<script>
-function copyToClipboard(btn) {
-  var text = btn.getAttribute('data-copy');
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(function() {
-      var orig = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(function(){ btn.textContent = orig; }, 1500);
-    });
-  }
-}
-</script>
-{{end}}
+{{define "scripts"}}{{end}}

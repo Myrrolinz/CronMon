@@ -114,17 +114,4 @@
 </details>
 {{end}}
 
-{{define "scripts"}}
-<script>
-function copyToClipboard(btn) {
-  var text = btn.getAttribute('data-copy');
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(function() {
-      var orig = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(function(){ btn.textContent = orig; }, 1500);
-    });
-  }
-}
-</script>
-{{end}}
+{{define "scripts"}}{{end}}

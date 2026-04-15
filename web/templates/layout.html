@@ -17,6 +17,7 @@
     }
     .status-up    { background: #d1fae5; color: #065f46; }
     .status-down  { background: #fee2e2; color: #991b1b; }
+    .status-fail  { background: #fee2e2; color: #991b1b; }
     .status-new   { background: #e0e7ff; color: #3730a3; }
     .status-paused{ background: #f3f4f6; color: #6b7280; }
     .ping-square {
@@ -73,6 +74,18 @@
   <main class="container" style="margin-top:1.5rem">
     {{template "content" .}}
   </main>
+  <script>
+  function copyToClipboard(btn) {
+    var text = btn.getAttribute('data-copy');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function() {
+        var orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(function(){ btn.textContent = orig; }, 1500);
+      });
+    }
+  }
+  </script>
   {{template "scripts" .}}
 </body>
 </html>
