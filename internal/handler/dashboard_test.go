@@ -77,9 +77,6 @@ func (r *fakeNotifRepo) ListByCheckID(_ context.Context, _ string, limit int) ([
 	return cp, nil
 }
 
-// pings is used below only for length comparison — define a real field.
-func (r *fakeNotifRepo) pings() int { return len(r.notifications) }
-
 // ---------------------------------------------------------------------------
 // helper: build a DashboardHandler with all-empty repos for rendering tests
 // ---------------------------------------------------------------------------
