@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"testing"
+	"time"
 )
 
 // setEnv sets minimal environment variables required to start the server,
@@ -137,10 +141,10 @@ func TestBuildMuxPingFailEndpointNoAuth(t *testing.T) {
 	}
 }
 
-// TestGracefulShutdown verifies that the HTTP server shuts down cleanly within
-// the configured 10-second timeout window. It starts a real listener on a
-// random port, issues a request while the server is live, calls Shutdown, and
-// then confirms that further requests are rejected.
+// TestGracefulShutdown verifies that http.Server.Shutdown drains in-flight
+// requests and causes subsequent connections to be refused.
+// It uses httptest.NewUnstartedServer so that ts.Config.Shutdown exercises
+// the real Shutdown code path (not just Close).
 func TestGracefulShutdown(t *testing.T) {
 	setEnv(t)
 
@@ -148,8 +152,8 @@ func TestGracefulShutdown(t *testing.T) {
 	deps := buildTestDeps(t, db)
 	mux := buildMux(deps)
 
-	// Use httptest.Server so we get a free port automatically.
-	ts := httptest.NewServer(mux)
+	ts := httptest.NewUnstartedServer(mux)
+	ts.Start()
 	defer ts.Close()
 
 	// Confirm the server is up and responding to ping.
@@ -161,15 +165,118 @@ func TestGracefulShutdown(t *testing.T) {
 		t.Fatalf("failed to close response body: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 before shutdown, got %d", resp.StatusCode)
+	}
+
+	// Call Shutdown on the underlying http.Server – the same instance that
+	// httptest is using – to exercise the graceful drain path.
+	shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := ts.Config.Shutdown(shutCtx); err != nil {
+		t.Fatalf("Shutdown returned unexpected error: %v", err)
+	}
+
+	// After Shutdown, new requests must fail.
+	if _, err := http.Get(ts.URL + "/ping/00000000-0000-0000-0000-000000000000"); err == nil {
+		t.Fatal("expected request to fail after server shutdown")
+	}
+}
+
+// TestRunServesAndShutsDown is an integration test that exercises the full
+// run() startup path: DB open, cache hydration, worker + scheduler lifecycle,
+// HTTP serving, and graceful shutdown via context cancellation.
+func TestRunServesAndShutsDown(t *testing.T) {
+	setEnv(t)
+
+	cfg := buildTestCfg(t)
+	cfg.DBPath = ":memory:"
+
+	// Find a free TCP port.  There is a brief TOCTOU window between Close and
+	// Serve, but on loopback this is acceptable for a test.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("find free port: %v", err)
+	}
+	cfg.Port = strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	ln.Close() //nolint:errcheck
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- run(ctx, cfg) }()
+
+	// Wait until the server is accepting connections (up to 1 s).
+	addr := "127.0.0.1:" + cfg.Port
+	started := false
+	for i := 0; i < 50; i++ {
+		conn, dialErr := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if dialErr == nil {
+			conn.Close() //nolint:errcheck
+			started = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !started {
+		cancel()
+		t.Fatal("server did not start within 1 s")
+	}
+
+	// Verify the ping endpoint responds end-to-end through the full stack.
+	resp, err := http.Get("http://" + addr + "/ping/00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatalf("ping request failed: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	// Close the test server (httptest.Server has its own listener).
-	ts.Close()
+	// Cancel the context to trigger graceful shutdown and confirm run() exits cleanly.
+	cancel()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("run() returned unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() did not complete within shutdown timeout")
+	}
+}
 
-	// After ts.Close(), new requests must fail.
-	if _, err := http.Get(ts.URL + "/ping/00000000-0000-0000-0000-000000000000"); err == nil {
-		t.Fatal("expected request to fail after server shutdown")
+// TestRunHandlesStartupFailure verifies that run() exits with a non-nil error
+// (and does not hang) when the HTTP server cannot bind its port.
+func TestRunHandlesStartupFailure(t *testing.T) {
+	setEnv(t)
+
+	cfg := buildTestCfg(t)
+	cfg.DBPath = ":memory:"
+
+	// Hold the listener so run() cannot bind the same port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close() //nolint:errcheck
+	cfg.Port = strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- run(ctx, cfg) }()
+
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Fatal("expected run() to return an error when port is already in use")
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("run() did not exit within timeout on startup failure")
 	}
 }
 

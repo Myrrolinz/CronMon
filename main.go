@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -38,9 +39,21 @@ func main() {
 	initLogger(cfg.LogLevel)
 	slog.Info("starting CronMon", "version", version, "port", cfg.Port)
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	if err := run(ctx, cfg); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// run opens the database, wires all subsystems, starts the HTTP server, and
+// blocks until ctx is cancelled or the HTTP server fails to start.
+// It is extracted from main so that integration tests can drive it directly.
+func run(ctx context.Context, cfg config.Config) error {
 	sqlDB, err := db.Open(cfg.DBPath)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() {
 		if closeErr := sqlDB.Close(); closeErr != nil {
@@ -54,10 +67,11 @@ func main() {
 	chanRepo := repository.NewChannelRepository(sqlDB)
 	notifRepo := repository.NewNotificationRepository(sqlDB)
 
-	// Cache
+	// Cache: hydrate from DB on every startup so the scheduler and ping handler
+	// have an up-to-date view from the first tick.
 	stateCache := cache.New(checkRepo)
 	if err := stateCache.Hydrate(context.Background()); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("hydrate cache: %w", err)
 	}
 
 	// Notifiers
@@ -82,32 +96,44 @@ func main() {
 	}
 	mux := buildMux(deps)
 	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":" + cfg.Port,
+		Handler:           mux,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
-	// Graceful shutdown
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
-
+	// serveErrCh captures a fatal ListenAndServe error (e.g. port already in
+	// use).  Without this, a startup failure would only be logged inside the
+	// goroutine while main blocked forever on <-ctx.Done().
+	serveErrCh := make(chan error, 1)
 	go func() {
 		slog.Info("HTTP server listening", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP server error", "err", err)
+			serveErrCh <- err
 		}
 	}()
 
-	<-ctx.Done()
-	slog.Info("shutdown signal received, draining…")
+	var runErr error
+	select {
+	case <-ctx.Done():
+		slog.Info("shutdown signal received, draining…")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+		if err := srv.Shutdown(shutCtx); err != nil {
+			slog.Error("HTTP shutdown error", "err", err)
+			// Shutdown timed out: in-flight handlers (e.g. ping) may still be
+			// running and could send on alertCh.  Force-close all remaining
+			// connections so those handlers return before we close the channel.
+			if closeErr := srv.Close(); closeErr != nil {
+				slog.Error("HTTP force-close error", "err", closeErr)
+			}
+		}
 
-	if err := srv.Shutdown(shutCtx); err != nil {
-		slog.Error("HTTP shutdown error", "err", err)
+	case runErr = <-serveErrCh:
+		slog.Error("HTTP server failed to start", "err", runErr)
 	}
 
 	sched.Stop()
@@ -115,6 +141,7 @@ func main() {
 	worker.Wait()
 
 	slog.Info("shutdown complete")
+	return runErr
 }
 
 // muxDeps holds all dependencies required by buildMux, grouped for readability
