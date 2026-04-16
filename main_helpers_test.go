@@ -19,7 +19,11 @@ func openTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("openTestDB: %v", err)
 	}
-	t.Cleanup(func() { sqlDB.Close() })
+	t.Cleanup(func() {
+		if closeErr := sqlDB.Close(); closeErr != nil {
+			t.Fatalf("openTestDB cleanup: %v", closeErr)
+		}
+	})
 	return sqlDB
 }
 

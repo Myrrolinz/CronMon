@@ -42,7 +42,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer sqlDB.Close()
+	defer func() {
+		if closeErr := sqlDB.Close(); closeErr != nil {
+			slog.Error("failed to close database", "err", closeErr)
+		}
+	}()
 
 	// Repos
 	checkRepo := repository.NewCheckRepository(sqlDB)

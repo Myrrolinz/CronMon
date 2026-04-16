@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 )
 
 // setEnv sets minimal environment variables required to start the server,
@@ -150,8 +148,6 @@ func TestGracefulShutdown(t *testing.T) {
 	deps := buildTestDeps(t, db)
 	mux := buildMux(deps)
 
-	srv := &http.Server{Handler: mux}
-
 	// Use httptest.Server so we get a free port automatically.
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -161,16 +157,11 @@ func TestGracefulShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pre-shutdown request failed: %v", err)
 	}
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("failed to close response body: %v", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	// Shut down the server with a short deadline.
-	shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutCtx); err != nil {
-		t.Logf("shutdown returned: %v (non-fatal for test)", err)
 	}
 
 	// Close the test server (httptest.Server has its own listener).
@@ -206,7 +197,7 @@ func TestBuildNotifiersNoSMTP(t *testing.T) {
 // notifier when SMTP configuration is present.
 func TestBuildNotifiersWithSMTP(t *testing.T) {
 	setEnv(t)
-	os.Setenv("SMTP_HOST", "smtp.example.com") //nolint:errcheck
+	os.Setenv("SMTP_HOST", "smtp.example.com")    //nolint:errcheck
 	os.Setenv("SMTP_FROM", "noreply@example.com") //nolint:errcheck
 	t.Cleanup(func() {
 		os.Unsetenv("SMTP_HOST") //nolint:errcheck
