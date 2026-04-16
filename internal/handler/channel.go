@@ -69,6 +69,12 @@ func (h *ChannelHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	configStr := r.FormValue("config")
 
+	// If the JS-assembled config field is empty, build it from the individual
+	// visible form fields so the form works without JavaScript.
+	if configStr == "" {
+		configStr = buildConfigFromFields(channelType, r)
+	}
+
 	if name == "" {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
@@ -190,6 +196,43 @@ func (h *ChannelHandler) HandleAttachDetach(w http.ResponseWriter, r *http.Reque
 // ---------------------------------------------------------------------------
 // Channel config validation
 // ---------------------------------------------------------------------------
+
+// buildConfigFromFields constructs the config JSON string from the individual
+// named form fields (e.g. _email_address, _slack_url, _webhook_url) that are
+// submitted by the non-JS version of the channel creation form.
+func buildConfigFromFields(channelType string, r *http.Request) string {
+	switch channelType {
+	case "email":
+		addr := strings.TrimSpace(r.FormValue("_email_address"))
+		if addr == "" {
+			return ""
+		}
+		b, _ := json.Marshal(struct {
+			Address string `json:"address"`
+		}{Address: addr})
+		return string(b)
+	case "slack":
+		u := strings.TrimSpace(r.FormValue("_slack_url"))
+		if u == "" {
+			return ""
+		}
+		b, _ := json.Marshal(struct {
+			URL string `json:"url"`
+		}{URL: u})
+		return string(b)
+	case "webhook":
+		u := strings.TrimSpace(r.FormValue("_webhook_url"))
+		if u == "" {
+			return ""
+		}
+		b, _ := json.Marshal(struct {
+			URL string `json:"url"`
+		}{URL: u})
+		return string(b)
+	default:
+		return ""
+	}
+}
 
 // validateChannelConfig dispatches to the per-type validation function.
 // It returns a descriptive error for unknown types or malformed configs.

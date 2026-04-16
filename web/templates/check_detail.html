@@ -1,0 +1,117 @@
+{{define "title"}}{{.Check.Name}}{{end}}
+
+{{define "content"}}
+<div style="display:flex; align-items:baseline; gap:1rem; margin-bottom:1rem">
+  <h2 style="margin:0">{{.Check.Name}}</h2>
+  <span class="status-badge status-{{.Check.Status}}">{{.Check.Status}}</span>
+  <a href="/checks" style="margin-left:auto; font-size:0.85rem">← Checks</a>
+</div>
+
+{{/* Ping URL */}}
+<article style="padding:0.75rem 1rem; margin-bottom:1.5rem">
+  <strong>Ping URL:</strong>
+  <div class="ping-url-row" style="margin-top:0.35rem">
+    <code>{{.PingURL}}</code>
+    <button class="copy-btn outline" style="padding:0.2em 0.6em; font-size:0.75rem"
+      data-copy="{{.PingURL}}" onclick="copyToClipboard(this)">Copy</button>
+  </div>
+</article>
+
+{{/* Ping history squares */}}
+<section style="margin-bottom:1.5rem">
+  <h4>Last 30 pings</h4>
+  <div>
+    {{range .PingSquares}}
+    <span class="ping-square ping-{{.Class}}" title="{{.Title}}"></span>
+    {{end}}
+  </div>
+</section>
+
+<div class="grid">
+
+{{/* Edit form */}}
+<section>
+  <h4>Edit</h4>
+  <form method="POST" action="/checks/{{.Check.ID}}">
+    <label>Name
+      <input type="text" name="name" value="{{.Check.Name}}" required>
+    </label>
+    <label>Schedule (cron)
+      <input type="text" name="schedule" value="{{.Check.Schedule}}" required>
+    </label>
+    <div class="grid">
+      <label>Grace Period (minutes)
+        <input type="number" name="grace" value="{{.Check.Grace}}" min="1" required>
+      </label>
+      <label>Tags (comma-separated)
+        <input type="text" name="tags" value="{{.Check.Tags}}">
+      </label>
+    </div>
+    <label>
+      <input type="checkbox" name="notify_on_fail" {{if .Check.NotifyOnFail}}checked{{end}}>
+      Alert on explicit /fail pings (notify_on_fail)
+    </label>
+    <button type="submit">Save Changes</button>
+  </form>
+</section>
+
+{{/* Attached channels + notifications */}}
+<section>
+  <h4>Notification Channels</h4>
+  <form method="POST" action="/checks/{{.Check.ID}}/channels">
+    {{range .AllChannels}}
+    <label>
+      <input type="checkbox" name="channel_ids" value="{{.ID}}"
+        {{if isAttached . $.AttachedChannelIDs}}checked{{end}}>
+      <span class="channel-badge">{{.Type}}</span> {{.Name}}
+    </label>
+    {{end}}
+    {{if not .AllChannels}}
+    <p style="font-size:0.85rem"><a href="/channels">Create a channel</a> first.</p>
+    {{end}}
+    <button type="submit" class="outline">Update Channels</button>
+  </form>
+
+  <hr>
+
+  <h4>Recent Alerts</h4>
+  {{if .Notifications}}
+  <table style="font-size:0.82rem">
+    <thead><tr><th>Type</th><th>Sent</th><th>Result</th></tr></thead>
+    <tbody>
+      {{range .Notifications}}
+      <tr>
+        <td><span class="status-badge status-{{.Type}}">{{.Type}}</span></td>
+        <td>{{formatTime .SentAt}}</td>
+        <td>{{if .Error}}<span style="color:#dc2626">{{derefStr .Error}}</span>{{else}}✓{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p style="font-size:0.85rem">No alerts sent yet.</p>
+  {{end}}
+</section>
+
+</div>{{/* end .grid */}}
+
+<hr>
+
+{{/* Danger zone */}}
+<details>
+  <summary style="cursor:pointer; color:#dc2626">Danger Zone</summary>
+  <div style="display:flex; gap:1rem; margin-top:0.75rem; flex-wrap:wrap">
+    <form method="POST" action="/checks/{{.Check.ID}}/pause">
+      <button type="submit" class="outline">
+        {{if eq .Check.Status "paused"}}Unpause{{else}}Pause{{end}} Check
+      </button>
+    </form>
+    <form method="POST" action="/checks/{{.Check.ID}}/delete"
+          onsubmit="return confirm('Delete check {{.Check.Name}}? This cannot be undone.')">
+      <button type="submit" style="background:#dc2626; border-color:#dc2626">Delete Check</button>
+    </form>
+  </div>
+</details>
+{{end}}
+
+{{define "scripts"}}{{end}}
