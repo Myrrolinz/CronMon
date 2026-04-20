@@ -26,14 +26,36 @@ func RequestLogging(next http.Handler) http.Handler {
 		if path == "/ping" || strings.HasPrefix(path, "/ping/") {
 			path = "/ping/[REDACTED]"
 		}
+		method := sanitizeLogString(r.Method)
+		path = sanitizeLogString(path)
+		remoteAddr := sanitizeLogString(r.RemoteAddr)
+
+		//nolint:gosec // request-derived fields are sanitized to strip control chars.
 		slog.Info("request",
-			"method", r.Method,
+			"method", method,
 			"path", path,
 			"status", status,
 			"duration_ms", time.Since(start).Milliseconds(),
-			"remote_addr", r.RemoteAddr,
+			"remote_addr", remoteAddr,
 		)
 	})
+}
+
+// sanitizeLogString strips control characters to prevent log injection.
+func sanitizeLogString(value string) string {
+	if value == "" {
+		return value
+	}
+
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if (r >= 0x00 && r <= 0x1f) || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 type responseRecorder struct {
