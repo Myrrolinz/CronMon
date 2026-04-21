@@ -11,19 +11,21 @@ import (
 	"github.com/myrrolinz/cronmon/internal/middleware"
 )
 
+// newTestLogger creates an isolated JSON slog.Logger that writes to buf.
+// Because the logger is injected directly into the middleware, the global
+// slog default is never mutated and tests are safe to run in parallel.
+func newTestLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+}
+
 func TestRequestLogging_RedactsPingPath(t *testing.T) {
 	var buf bytes.Buffer
-	restore := setTestLogger(t, &buf)
-
-	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mw := middleware.RequestLogging(newTestLogger(&buf), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	})
-	mw := middleware.RequestLogging(inner)
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/ping/00000000-0000-0000-0000-000000000000/start", nil)
-	w := httptest.NewRecorder()
-	mw.ServeHTTP(w, req)
-	restore()
+	mw.ServeHTTP(httptest.NewRecorder(), req)
 
 	if bytes.Contains(buf.Bytes(), []byte("00000000-0000-0000-0000-000000000000")) {
 		t.Fatal("UUID must not appear in request log")
@@ -40,17 +42,12 @@ func TestRequestLogging_RedactsPingPath(t *testing.T) {
 
 func TestRequestLogging_LogsNonPingPath(t *testing.T) {
 	var buf bytes.Buffer
-	restore := setTestLogger(t, &buf)
-
-	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mw := middleware.RequestLogging(newTestLogger(&buf), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-	})
-	mw := middleware.RequestLogging(inner)
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/checks", nil)
-	w := httptest.NewRecorder()
-	mw.ServeHTTP(w, req)
-	restore()
+	mw.ServeHTTP(httptest.NewRecorder(), req)
 
 	var rec map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
@@ -66,17 +63,12 @@ func TestRequestLogging_LogsNonPingPath(t *testing.T) {
 
 func TestRequestLogging_Fields(t *testing.T) {
 	var buf bytes.Buffer
-	restore := setTestLogger(t, &buf)
-
-	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mw := middleware.RequestLogging(newTestLogger(&buf), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	})
-	mw := middleware.RequestLogging(inner)
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/checks", nil)
-	w := httptest.NewRecorder()
-	mw.ServeHTTP(w, req)
-	restore()
+	mw.ServeHTTP(httptest.NewRecorder(), req)
 
 	var rec map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
@@ -87,13 +79,4 @@ func TestRequestLogging_Fields(t *testing.T) {
 			t.Errorf("missing log field %q in %s", key, buf.String())
 		}
 	}
-}
-
-// setTestLogger installs a JSON slog handler writing to buf and returns a
-// function that restores the previous default logger.
-func setTestLogger(t *testing.T, buf *bytes.Buffer) (restore func()) {
-	t.Helper()
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	return func() { slog.SetDefault(prev) }
 }

@@ -7,12 +7,16 @@ import (
 	"time"
 )
 
-// RequestLogging returns middleware that logs each completed request with slog.
-// Fields: method, path, status, duration_ms, remote_addr.
+// RequestLogging returns middleware that logs each completed request with the
+// provided logger. Fields: method, path, status, duration_ms, remote_addr.
 //
 // Paths for ping routes are treated as sensitive (the UUID is a credential);
 // the logged path is always /ping/[REDACTED] instead of the real path.
-func RequestLogging(next http.Handler) http.Handler {
+//
+// Callers should pass slog.Default() for production use. Accepting an explicit
+// logger avoids mutating global state in tests, making parallel test execution
+// safe.
+func RequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &responseRecorder{ResponseWriter: w}
@@ -31,7 +35,7 @@ func RequestLogging(next http.Handler) http.Handler {
 		remoteAddr := sanitizeLogString(r.RemoteAddr)
 
 		//nolint:gosec // request-derived fields are sanitized to strip control chars.
-		slog.Info("request",
+		logger.Info("request",
 			"method", method,
 			"path", path,
 			"status", status,
