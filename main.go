@@ -235,7 +235,7 @@ func buildMux(deps muxDeps) http.Handler {
 	root.Handle("/ping/", pingMux)
 	root.Handle("/", protectedHandler)
 
-	return root
+	return middleware.RequestLogging(slog.Default(), root)
 }
 
 // buildNotifiers constructs the map of Notifier implementations to register
